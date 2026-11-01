@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import html
-import os
-
-import httpx
 
 from .report import REPORT_FIELDS, get_report_data
+from .telegram_api import telegram_api
 from .telegram_store import audit, create_user_by_id, ensure_user, find_user, get_user, list_users, save_user
 
 
@@ -17,17 +15,7 @@ FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
 
 
 def _api(method: str, payload: dict[str, object]) -> dict[str, object]:
-    token = os.environ["TELEGRAM_BOT_TOKEN"]
-    response = httpx.post(
-        f"https://api.telegram.org/bot{token}/{method}",
-        json=payload,
-        timeout=30,
-    )
-    response.raise_for_status()
-    result = response.json()
-    if not result.get("ok"):
-        raise RuntimeError(f"Telegram {method} failed")
-    return result
+    return telegram_api(method, payload)
 
 
 def _send(chat_id: int, text: str, reply_markup: dict[str, object] | None = None) -> None:

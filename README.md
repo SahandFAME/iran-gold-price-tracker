@@ -47,8 +47,9 @@ The report reads two independent sources: TGJU's newest published 18K daily high
 
 Additional sensitive production configuration:
 
-- `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_WEBHOOK_SECRET`
 - `TELEGRAM_ADMIN_ID`
+
+The non-secret `TELEGRAM_CONNECTOR` value identifies a Telegram connector attached to this project in Vercel Connect. The BotFather token is entered directly into that connector and is requested at runtime with the deployment's project OIDC identity; it is never stored in project environment variables.
 
 After those values are configured, call the protected `/api/telegram_setup` endpoint once with the existing setup bearer secret. It registers the webhook and the Persian `/start`, `/report`, and `/admin` commands without returning either Telegram secret.
