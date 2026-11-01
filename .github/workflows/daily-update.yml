@@ -1,0 +1,83 @@
+name: Update 18K gold workbook
+
+on:
+  schedule:
+    # 21:00 Asia/Tehran (Iran no longer observes daylight saving time).
+    - cron: "30 17 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-gold-workbook-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RCLONE_CONFIG: ${{ runner.temp }}/rclone.conf
+      RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
+      REMOTE_WORKBOOK: onedrive_personal:اسناد/Geram18-tahlil-updated.xlsm
+      JOB_DIRECTORY: ${{ runner.temp }}/gold-workbook-update
+
+    steps:
+      - name: Check out updater
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install rclone
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes rclone
+
+      - name: Configure personal OneDrive
+        shell: bash
+        run: |
+          if [[ -z "$RCLONE_CONFIG_CONTENT" ]]; then
+            echo "The RCLONE_CONFIG repository secret is missing." >&2
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$RCLONE_CONFIG_CONTENT" > "$RCLONE_CONFIG"
+          if ! rclone listremotes | grep --fixed-strings --line-regexp --quiet "onedrive_personal:"; then
+            echo "The rclone config must contain a remote named onedrive_personal." >&2
+            exit 1
+          fi
+
+      - name: Download the current workbook
+        shell: bash
+        run: |
+          mkdir -p "$JOB_DIRECTORY"
+          rclone lsjson --stat --hash "$REMOTE_WORKBOOK" > "$JOB_DIRECTORY/before.json"
+          rclone copyto "$REMOTE_WORKBOOK" "$JOB_DIRECTORY/source.xlsm" --checkers 1 --transfers 1
+
+      - name: Apply TGJU prices, formulas, and charts
+        run: |
+          python -m gold_updater.cli \
+            "$JOB_DIRECTORY/source.xlsm" \
+            --output "$JOB_DIRECTORY/updated.xlsm" \
+            --audit-file "$JOB_DIRECTORY/audit.json"
+
+      - name: Upload only if the source is unchanged
+        shell: bash
+        run: |
+          if ! python - "$JOB_DIRECTORY/audit.json" <<'PY'
+          import json
+          import sys
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              raise SystemExit(0 if json.load(handle)["updated"] else 1)
+          PY
+          then
+            echo "The workbook already contains all available dates; no upload is needed."
+            exit 0
+          fi
+
+          rclone lsjson --stat --hash "$REMOTE_WORKBOOK" > "$JOB_DIRECTORY/after.json"
+          if ! cmp --silent "$JOB_DIRECTORY/before.json" "$JOB_DIRECTORY/after.json"; then
+            echo "The OneDrive workbook changed during this run; refusing to overwrite it." >&2
+            exit 1
+          fi
+
+          rclone copyto "$JOB_DIRECTORY/updated.xlsm" "$REMOTE_WORKBOOK" --checkers 1 --transfers 1
