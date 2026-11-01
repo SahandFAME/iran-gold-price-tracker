@@ -9,7 +9,7 @@ from gold_updater.telegram_profile import sync_bot_profile
 class handler(BaseHTTPRequestHandler):
     """One-release bootstrap route; removed immediately after profile installation."""
 
-    def do_POST(self) -> None:
+    def do_GET(self) -> None:
         try:
             send_json(self, 200, {"ok": True, "profile_updated": sync_bot_profile()})
         except Exception as error:
