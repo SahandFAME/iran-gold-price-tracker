@@ -8,6 +8,11 @@ import httpx
 
 
 TGJU_URL = "https://api.tgju.org/v1/market/indicator/summary-table-data/geram18"
+TGJU_LIVE_URLS = (
+    "https://call2.tgju.org/ajax.json",
+    "https://call3.tgju.org/ajax.json",
+    "https://call1.tgju.org/ajax.json",
+)
 
 
 class TGJUTemporarilyUnavailable(RuntimeError):
@@ -127,3 +132,37 @@ def fetch_latest_tgju_high() -> tuple[dt.date, int]:
     newest = max(rows, key=lambda row: dt.datetime.strptime(row[6], "%Y/%m/%d"))
     day = dt.datetime.strptime(newest[6], "%Y/%m/%d").date()
     return day, int(newest[2].replace(",", "")) // 10
+
+
+def fetch_current_tgju_price() -> int:
+    """Return TGJU's live 18K-gold quote in toman."""
+
+    last_error = "unknown error"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; Didban-Tala-Sekke/1.0)",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Referer": "https://www.tgju.org/",
+    }
+    with httpx.Client(headers=headers, timeout=httpx.Timeout(8), follow_redirects=True) as client:
+        for url in TGJU_LIVE_URLS:
+            try:
+                response = client.get(url)
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("TGJU live response is not an object")
+                table = payload.get("current", payload)
+                if not isinstance(table, dict):
+                    raise ValueError("TGJU live response has no current table")
+                item = table.get("geram18")
+                if not isinstance(item, dict):
+                    raise ValueError("TGJU live response has no geram18 item")
+                raw_price = item.get("p")
+                price_rial = int(str(raw_price).replace(",", ""))
+                if price_rial <= 0:
+                    raise ValueError("TGJU live price is not positive")
+                return price_rial // 10
+            except (httpx.HTTPError, TypeError, ValueError) as error:
+                last_error = f"{type(error).__name__}: {error}"
+
+    raise TGJUTemporarilyUnavailable(f"TGJU live quote is unavailable ({last_error})")

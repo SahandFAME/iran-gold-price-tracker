@@ -46,7 +46,7 @@ def test_profile_sync_sets_text_and_first_avatar(monkeypatch) -> None:
     assert saved == [telegram_profile.PROFILE_VERSION]
 
 
-def test_start_sends_one_inline_panel(monkeypatch) -> None:
+def test_start_restores_persistent_reply_menu(monkeypatch) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
     user = {"id": 123, "status": "approved", "role": "user"}
     monkeypatch.setattr(
@@ -56,7 +56,6 @@ def test_start_sends_one_inline_panel(monkeypatch) -> None:
     )
     monkeypatch.setattr(telegram_bot, "sync_bot_profile", lambda: False)
     monkeypatch.setattr(telegram_bot, "save_user", lambda value: None)
-    monkeypatch.setattr(telegram_bot, "_remove_legacy_keyboard", lambda value, chat_id: None)
     monkeypatch.setattr(
         telegram_bot,
         "_api",
@@ -76,17 +75,17 @@ def test_start_sends_one_inline_panel(monkeypatch) -> None:
     sent = [payload for method, payload in calls if method == "sendMessage"]
     assert len(sent) == 1
     assert sent[0]["text"] == telegram_profile.START_MESSAGE
-    assert sent[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "nav:report"
-    assert user["panel_message_id"] == 42
+    assert sent[0]["reply_markup"]["keyboard"][0][0]["text"] == telegram_bot.REPORT_BUTTON
+    assert user["prompt_message_id"] == 42
 
 
-def test_report_button_edits_existing_panel_without_new_message(monkeypatch) -> None:
+def test_report_removes_prompt_but_preserves_previous_reports(monkeypatch) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
     user = {
         "id": 123,
         "status": "approved",
         "role": "user",
-        "panel_message_id": 42,
+        "prompt_message_id": 42,
         "ui_version": telegram_bot.UI_VERSION,
     }
     monkeypatch.setattr(telegram_bot, "ensure_user", lambda sender: user)
@@ -95,35 +94,37 @@ def test_report_button_edits_existing_panel_without_new_message(monkeypatch) -> 
     monkeypatch.setattr(
         telegram_bot,
         "_api",
-        lambda method, payload: calls.append((method, payload)) or {"ok": True, "result": True},
+        lambda method, payload: calls.append((method, payload))
+        or ({"ok": True, "result": {"message_id": 100}} if method == "sendMessage" else {"ok": True}),
     )
 
     telegram_bot._handle_callback(
         {
             "id": "callback-1",
             "from": {"id": 123},
-            "message": {"message_id": 42, "chat": {"id": 123, "type": "private"}},
+            # This is an older report from the v2 interface and must survive.
+            "message": {"message_id": 90, "chat": {"id": 123, "type": "private"}},
             "data": "nav:report",
         }
     )
 
-    assert not [call for call in calls if call[0] == "sendMessage"]
-    edits = [payload for method, payload in calls if method == "editMessageText"]
-    assert len(edits) == 1
-    assert edits[0]["message_id"] == 42
-    assert edits[0]["text"] == "<b>REPORT</b>"
-    callbacks = edits[0]["reply_markup"]["inline_keyboard"]
-    assert any(button["callback_data"] == "nav:home" for row in callbacks for button in row)
+    deleted_ids = [payload["message_id"] for method, payload in calls if method == "deleteMessage"]
+    assert deleted_ids == [42]
+    sent = [payload for method, payload in calls if method == "sendMessage"]
+    assert len(sent) == 1
+    assert sent[0]["text"] == "<b>REPORT</b>"
+    assert "keyboard" in sent[0]["reply_markup"]
+    assert "prompt_message_id" not in user
 
 
-def test_user_list_is_paginated_in_same_panel(monkeypatch) -> None:
+def test_user_list_replaces_previous_prompt(monkeypatch) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
     admin = {
         "id": 1,
         "status": "approved",
         "role": "admin",
         "root_admin": True,
-        "panel_message_id": 99,
+        "prompt_message_id": 99,
         "ui_version": telegram_bot.UI_VERSION,
     }
     users = [
@@ -136,7 +137,8 @@ def test_user_list_is_paginated_in_same_panel(monkeypatch) -> None:
     monkeypatch.setattr(
         telegram_bot,
         "_api",
-        lambda method, payload: calls.append((method, payload)) or {"ok": True, "result": True},
+        lambda method, payload: calls.append((method, payload))
+        or ({"ok": True, "result": {"message_id": 100}} if method == "sendMessage" else {"ok": True}),
     )
 
     telegram_bot._handle_callback(
@@ -148,47 +150,82 @@ def test_user_list_is_paginated_in_same_panel(monkeypatch) -> None:
         }
     )
 
-    edits = [payload for method, payload in calls if method == "editMessageText"]
-    assert len(edits) == 1
-    assert "کاربر ۱ از ۲" in edits[0]["text"]
-    callbacks = edits[0]["reply_markup"]["inline_keyboard"]
+    deleted_ids = [payload["message_id"] for method, payload in calls if method == "deleteMessage"]
+    assert deleted_ids == [99]
+    sent = [payload for method, payload in calls if method == "sendMessage"]
+    assert len(sent) == 1
+    assert "کاربر ۱ از ۲" in sent[0]["text"]
+    callbacks = sent[0]["reply_markup"]["inline_keyboard"]
     assert any(button["callback_data"] == "admin:users:2" for row in callbacks for button in row)
-    assert not [call for call in calls if call[0] == "sendMessage"]
+    assert admin["prompt_message_id"] == 100
 
 
-def test_stale_panel_is_deleted_before_replacement(monkeypatch) -> None:
+def test_new_prompt_deletes_only_previous_prompt(monkeypatch) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
-    user = {"id": 123, "status": "approved", "role": "user", "panel_message_id": 12}
+    user = {"id": 123, "status": "approved", "role": "user", "prompt_message_id": 12}
     monkeypatch.setattr(telegram_bot, "save_user", lambda value: None)
 
     def fake_api(method, payload):
         calls.append((method, payload))
-        if method == "editMessageText":
-            raise RuntimeError("message to edit not found")
         if method == "sendMessage":
             return {"ok": True, "result": {"message_id": 13}}
         return {"ok": True, "result": True}
 
     monkeypatch.setattr(telegram_bot, "_api", fake_api)
-    telegram_bot._panel(user, 123, "new panel", telegram_bot._main_keyboard("user"))
+    telegram_bot._prompt(user, 123, "new prompt", telegram_bot._main_keyboard("user"))
 
-    assert [method for method, _ in calls] == ["editMessageText", "deleteMessage", "sendMessage"]
-    assert user["panel_message_id"] == 13
+    assert [method for method, _ in calls] == ["deleteMessage", "sendMessage"]
+    assert user["prompt_message_id"] == 13
 
 
-def test_legacy_keyboard_cleanup_message_is_immediately_deleted(monkeypatch) -> None:
+def test_v2_migration_forgets_panel_without_deleting_possible_report(monkeypatch) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
-    user = {"id": 123, "status": "approved", "role": "user"}
+    user = {"id": 123, "status": "approved", "role": "user", "ui_version": 2, "panel_message_id": 77}
     monkeypatch.setattr(telegram_bot, "save_user", lambda value: None)
     monkeypatch.setattr(
         telegram_bot,
         "_api",
-        lambda method, payload: calls.append((method, payload))
-        or ({"ok": True, "result": {"message_id": 77}} if method == "sendMessage" else {"ok": True}),
+        lambda method, payload: calls.append((method, payload)) or {"ok": True},
     )
 
-    telegram_bot._remove_legacy_keyboard(user, 123)
+    telegram_bot._migrate_ui(user)
 
-    assert [method for method, _ in calls] == ["sendMessage", "deleteMessage"]
-    assert calls[0][1]["reply_markup"] == {"remove_keyboard": True}
+    assert calls == []
+    assert "panel_message_id" not in user
     assert user["ui_version"] == telegram_bot.UI_VERSION
+
+
+def test_report_text_contains_only_requested_fields(monkeypatch) -> None:
+    monkeypatch.setattr(
+        telegram_bot,
+        "get_report_data",
+        lambda: {
+            "tgju": {"available": True, "price_toman": 25_651_400},
+            "workbook": {
+                "date": "2026-11-01",
+                "values": {
+                    "D": 26_408_200,
+                    "E": 20_304_774.867,
+                    "F": 24_111_967.023,
+                    "G": 29_676_267.105,
+                    "H": 20_402_433.635,
+                    "I": 18_547_666.941,
+                    "K": 23_981_552.941,
+                    "L": 25_129_213.846,
+                },
+            },
+        },
+    )
+
+    text = telegram_bot._report_text()
+
+    assert "<b>آخرین قیمت:</b> ۲۵,۶۵۱,۴۰۰ تومان" in text
+    assert "قیمت آربیتراژی" in text
+    assert "قیمت تعادلی جاری" in text
+    assert "کران محاسباتی بالا" in text
+    assert "کف محاسباتی" in text
+    assert "قیمت حرکت چرخه ای" in text
+    assert "محاسبات فایل اکسل" not in text
+    assert "قیمت ثبت‌شده" not in text
+    assert "ارزش حدودی مقطعی" not in text
+    assert "میانگین ۸۵" not in text

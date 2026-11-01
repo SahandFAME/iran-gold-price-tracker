@@ -13,7 +13,7 @@ ADMIN_BUTTON = "⚙️ داشبورد مدیریت"
 STATUS_LABELS = {"pending": "در انتظار تأیید", "approved": "فعال", "removed": "حذف‌شده"}
 ROLE_LABELS = {"user": "کاربر", "admin": "مدیر"}
 FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
-UI_VERSION = 2
+UI_VERSION = 3
 
 
 def _api(method: str, payload: dict[str, object]) -> dict[str, object]:
@@ -44,23 +44,6 @@ def _send(chat_id: int, text: str, reply_markup: dict[str, object] | None = None
     return int(result["message_id"])
 
 
-def _edit(
-    chat_id: int,
-    message_id: int,
-    text: str,
-    reply_markup: dict[str, object] | None = None,
-) -> bool:
-    payload = _message_payload(chat_id, text, reply_markup)
-    payload["message_id"] = message_id
-    try:
-        _api("editMessageText", payload)
-        return True
-    except RuntimeError as error:
-        if "message is not modified" in str(error).casefold():
-            return True
-        return False
-
-
 def _delete(chat_id: int, message_id: int | None) -> None:
     if not message_id:
         return
@@ -77,7 +60,26 @@ def _answer(callback_id: str, text: str | None = None) -> None:
     _api("answerCallbackQuery", payload)
 
 
-def _panel(
+def _migrate_ui(user: dict[str, object]) -> None:
+    if user.get("ui_version") == UI_VERSION:
+        return
+    # The v2 panel may be a report. Forget its ID rather than deleting it so
+    # historical reports survive the menu-model migration.
+    user.pop("panel_message_id", None)
+    user.pop("prompt_message_id", None)
+    user["ui_version"] = UI_VERSION
+    save_user(user)
+
+
+def _clear_prompt(user: dict[str, object], chat_id: int) -> None:
+    prompt_id = int(user.get("prompt_message_id") or 0) or None
+    _delete(chat_id, prompt_id)
+    if prompt_id:
+        user.pop("prompt_message_id", None)
+        save_user(user)
+
+
+def _prompt(
     user: dict[str, object],
     chat_id: int,
     text: str,
@@ -85,24 +87,9 @@ def _panel(
     *,
     message_id: int | None = None,
 ) -> None:
-    target_id = message_id or int(user.get("panel_message_id") or 0) or None
-    if target_id and _edit(chat_id, target_id, text, reply_markup):
-        if user.get("panel_message_id") != target_id:
-            user["panel_message_id"] = target_id
-            save_user(user)
-        return
-
-    _delete(chat_id, target_id)
-    user["panel_message_id"] = _send(chat_id, text, reply_markup)
-    save_user(user)
-
-
-def _remove_legacy_keyboard(user: dict[str, object], chat_id: int) -> None:
-    if user.get("ui_version") == UI_VERSION:
-        return
-    cleanup_id = _send(chat_id, "در حال آماده‌سازی منوی جدید…", {"remove_keyboard": True})
-    _delete(chat_id, cleanup_id)
-    user["ui_version"] = UI_VERSION
+    del message_id  # Callback messages are not deleted unless they are tracked prompts.
+    _clear_prompt(user, chat_id)
+    user["prompt_message_id"] = _send(chat_id, text, reply_markup)
     save_user(user)
 
 
@@ -113,18 +100,10 @@ def _delete_incoming(message: dict[str, object], chat_id: int) -> None:
 
 
 def _main_keyboard(role: str) -> dict[str, object]:
-    rows = [[{"text": REPORT_BUTTON, "callback_data": "nav:report"}]]
+    rows = [[{"text": REPORT_BUTTON}]]
     if role == "admin":
-        rows.append([{"text": ADMIN_BUTTON, "callback_data": "nav:admin"}])
-    return {"inline_keyboard": rows}
-
-
-def _report_keyboard(role: str) -> dict[str, object]:
-    rows = [[{"text": "🔄 بروزرسانی گزارش", "callback_data": "nav:report"}]]
-    if role == "admin":
-        rows.append([{"text": ADMIN_BUTTON, "callback_data": "nav:admin"}])
-    rows.append([{"text": "🏠 منوی اصلی", "callback_data": "nav:home"}])
-    return {"inline_keyboard": rows}
+        rows.append([{"text": ADMIN_BUTTON}])
+    return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
 
 
 def _show_home(
@@ -133,7 +112,7 @@ def _show_home(
     *,
     message_id: int | None = None,
 ) -> None:
-    _panel(user, chat_id, START_MESSAGE, _main_keyboard(str(user["role"])), message_id=message_id)
+    _prompt(user, chat_id, START_MESSAGE, _main_keyboard(str(user["role"])), message_id=message_id)
 
 
 def _admin_menu(
@@ -144,7 +123,7 @@ def _admin_menu(
     notice: str | None = None,
 ) -> None:
     prefix = f"{notice}\n\n" if notice else ""
-    _panel(
+    _prompt(
         user,
         chat_id,
         f"{prefix}<b>داشبورد مدیریت</b>\nگزینه موردنظر را انتخاب کنید:",
@@ -174,7 +153,7 @@ def _users_menu(
 ) -> None:
     users = list_users()
     if not users:
-        _panel(
+        _prompt(
             actor,
             chat_id,
             "<b>فهرست کاربران</b>\n\nهنوز کاربری ثبت نشده است.",
@@ -229,7 +208,7 @@ def _users_menu(
             [{"text": "🏠 منوی اصلی", "callback_data": "nav:home"}],
         ]
     )
-    _panel(actor, chat_id, text, {"inline_keyboard": rows}, message_id=message_id)
+    _prompt(actor, chat_id, text, {"inline_keyboard": rows}, message_id=message_id)
 
 
 def _add_member_prompt(
@@ -240,7 +219,7 @@ def _add_member_prompt(
     error: str | None = None,
 ) -> None:
     prefix = f"{error}\n\n" if error else ""
-    _panel(
+    _prompt(
         user,
         chat_id,
         f"{prefix}<b>افزودن عضو</b>\n\nنام کاربری (با یا بدون @) یا شناسه عددی کاربر را ارسال کنید.",
@@ -258,10 +237,6 @@ def _fa_number(value: float | int) -> str:
     return f"{round(value):,}".translate(FA_DIGITS)
 
 
-def _fa_date(value: str) -> str:
-    return value.replace("-", "/").translate(FA_DIGITS)
-
-
 def _report_text() -> str:
     report = get_report_data()
     tgju = report["tgju"]
@@ -272,20 +247,11 @@ def _report_text() -> str:
         lines.extend(
             [
                 "",
-                "<b>آخرین بیشترین قیمت TGJU</b>",
-                f"{_fa_number(tgju['price_toman'])} تومان",
-                f"تاریخ انتشار: {_fa_date(str(tgju['date']))}",
+                f"<b>آخرین قیمت:</b> {_fa_number(tgju['price_toman'])} تومان",
             ]
         )
     else:
         lines.extend(["", "⚠️ دریافت قیمت لحظه‌ای TGJU موقتاً امکان‌پذیر نیست."])
-    lines.extend(
-        [
-            "",
-            f"<b>محاسبات فایل اکسل — {_fa_date(str(workbook['date']))}</b>",
-            f"قیمت ثبت‌شده: {_fa_number(values['D'])} تومان",
-        ]
-    )
     for column, label, explanation in REPORT_FIELDS:
         lines.extend(
             [
@@ -304,13 +270,9 @@ def _show_report(
     *,
     message_id: int | None = None,
 ) -> None:
-    _panel(
-        user,
-        chat_id,
-        _report_text(),
-        _report_keyboard(str(user["role"])),
-        message_id=message_id,
-    )
+    del message_id
+    _clear_prompt(user, chat_id)
+    _send(chat_id, _report_text(), _main_keyboard(str(user["role"])))
 
 
 def _approved(user: dict[str, object]) -> bool:
@@ -327,7 +289,7 @@ def _show_pending(
     *,
     message_id: int | None = None,
 ) -> None:
-    _panel(user, chat_id, PENDING_START_MESSAGE, message_id=message_id)
+    _prompt(user, chat_id, PENDING_START_MESSAGE, message_id=message_id)
 
 
 def _handle_message(message: dict[str, object]) -> None:
@@ -340,7 +302,7 @@ def _handle_message(message: dict[str, object]) -> None:
     text = str(message.get("text") or "").strip()
     is_start = text == "/start" or text.startswith("/start ")
     _delete_incoming(message, chat_id)
-    _remove_legacy_keyboard(user, chat_id)
+    _migrate_ui(user)
 
     if is_start:
         try:
@@ -392,7 +354,7 @@ def _handle_message(message: dict[str, object]) -> None:
         if _admin(user):
             _admin_menu(user, chat_id)
         else:
-            _panel(
+            _prompt(
                 user,
                 chat_id,
                 "شما به بخش مدیریت دسترسی ندارید.",
@@ -409,7 +371,7 @@ def _handle_callback(callback: dict[str, object]) -> None:
     if not isinstance(sender, dict) or not isinstance(chat, dict):
         return
     user = ensure_user(sender)
-    _remove_legacy_keyboard(user, int(chat["id"]))
+    _migrate_ui(user)
     callback_id = str(callback["id"])
     chat_id = int(chat["id"])
     message_id = int(message.get("message_id") or 0) or None

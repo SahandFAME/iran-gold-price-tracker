@@ -6,18 +6,16 @@ import urllib.parse
 
 from .microsoft import get_access_token
 from .service import _download_workbook, _graph_request
-from .tgju import TGJUTemporarilyUnavailable, fetch_latest_tgju_high
+from .tgju import TGJUTemporarilyUnavailable, fetch_current_tgju_price
 from .workbook import latest_workbook_snapshot
 
 
 REPORT_FIELDS = (
-    ("E", "خط آربیتراژی (میانگین ۲۴۰ روزه)", "میانگین بلندمدت برای سنجش فاصله قیمت بازار از روند آربیتراژی."),
-    ("F", "تعادلی جاری", "برآورد سطح تعادلی جاری بر پایه ۱٫۳ برابر میانگین ۳۷۰ روزه."),
-    ("G", "کران محاسباتی بالا", "برآورد سقف محاسباتی بر پایه ۱٫۶ برابر میانگین ۳۷۰ روزه."),
-    ("H", "ارزش حدودی مقطعی", "برآورد کوتاه‌مدت بر پایه ۱٫۱ برابر میانگین ۳۷۰ روزه."),
-    ("I", "میانگین متحرک ۳۷۰ روزه (کف محاسباتی)", "نمایی از روند بسیار بلندمدت و کف محاسباتی مدل."),
-    ("K", "میانگین ۸۵ روزه (حرکت چرخه‌ای ۲)", "میانگین میان‌مدت برای مشاهده چرخه دوم حرکت قیمت."),
-    ("L", "میانگین ۶۵ روزه (حرکت چرخه‌ای)", "میانگین کوتاه‌تر برای مشاهده تغییرات چرخه‌ای قیمت."),
+    ("E", "قیمت آربیتراژی", "خرید چشم بسته که معمولاً در صورت دیده شدن بسیار کوتاه مدت خواهد بود"),
+    ("F", "قیمت تعادلی جاری", "قیمت منصفانه فعلی"),
+    ("G", "کران محاسباتی بالا", "قیمتی که حباب خیلی بالا است و ارزش خرید در مقطع کنونی ندارد"),
+    ("I", "کف محاسباتی", "پایین ترین قیمتی که در مقطع کنونی میتوان متصور شد"),
+    ("L", "قیمت حرکت چرخه ای", "قیمتی که معمولاً در صورت دیده شدن از همانجا یا کمی پایینتر قیمت برمیگردد"),
 )
 
 
@@ -32,8 +30,8 @@ def get_report_data() -> dict[str, object]:
 
     tgju: dict[str, object]
     try:
-        day, price = fetch_latest_tgju_high()
-        tgju = {"available": True, "date": day.isoformat(), "price_toman": price}
+        price = fetch_current_tgju_price()
+        tgju = {"available": True, "price_toman": price}
     except TGJUTemporarilyUnavailable:
         tgju = {"available": False}
 

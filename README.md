@@ -43,9 +43,9 @@ Access is approval-only:
 - administrators can approve, promote, demote, or remove users, and can add a member by known username or numeric Telegram ID;
 - user records and admin audit events are encrypted before being written to the existing private Blob store.
 
-The bot uses one editable inline panel per conversation. Report, dashboard, user-management, refresh, back, and home actions replace that panel instead of appending messages. User-management is paginated one account at a time, typed commands are removed after processing, and `/start` removes the legacy persistent reply keyboard during migration.
+The main menu uses Telegram's persistent reply keyboard, with Report available to every approved user and the Admin Dashboard added for administrators. The bot tracks only transient prompts: each new menu or admin prompt deletes the preceding prompt before it is sent. Reports are intentionally not tracked or deleted, so users retain their report history. User-management remains paginated one account at a time, and typed commands are removed after processing when Telegram permits it.
 
-The report reads two independent sources: TGJU's newest published 18K daily high and the latest cached calculation row in the macro-enabled workbook. It labels the calculation date explicitly and explains every displayed model value in Persian.
+The report reads two independent sources: TGJU's live 18K quote and the latest cached calculation row in the macro-enabled workbook. It displays only the requested analytical values with their Persian labels and explanations; historical reports remain in the Telegram chat.
 
 Additional sensitive production configuration:
 
