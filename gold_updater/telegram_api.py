@@ -4,6 +4,7 @@ import asyncio
 import functools
 import logging
 import os
+from typing import TypeAlias
 
 import httpx
 from vercel import connect
@@ -12,6 +13,9 @@ from vercel import connect
 # Telegram places the bot credential in the request path. The default HTTPX
 # INFO log would therefore disclose it in function logs.
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+TelegramFile: TypeAlias = tuple[str, bytes, str]
 
 
 @functools.lru_cache(maxsize=1)
@@ -26,12 +30,16 @@ def telegram_token() -> str:
     )
 
 
-def telegram_api(method: str, payload: dict[str, object] | None = None) -> dict[str, object]:
-    response = httpx.post(
-        f"https://api.telegram.org/bot{telegram_token()}/{method}",
-        json=payload or {},
-        timeout=30,
-    )
+def telegram_api(
+    method: str,
+    payload: dict[str, object] | None = None,
+    files: dict[str, TelegramFile] | None = None,
+) -> dict[str, object]:
+    url = f"https://api.telegram.org/bot{telegram_token()}/{method}"
+    if files:
+        response = httpx.post(url, data=payload or {}, files=files, timeout=30)
+    else:
+        response = httpx.post(url, json=payload or {}, timeout=30)
     try:
         result = response.json()
     except ValueError:

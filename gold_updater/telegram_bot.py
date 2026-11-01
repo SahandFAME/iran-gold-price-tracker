@@ -4,6 +4,7 @@ import html
 
 from .report import REPORT_FIELDS, get_report_data
 from .telegram_api import telegram_api
+from .telegram_profile import PENDING_START_MESSAGE, START_MESSAGE, sync_bot_profile
 from .telegram_store import audit, create_user_by_id, ensure_user, find_user, get_user, list_users, save_user
 
 
@@ -149,9 +150,20 @@ def _handle_message(message: dict[str, object]) -> None:
     chat_id = int(chat["id"])
     user = ensure_user(sender)
     text = str(message.get("text") or "").strip()
+    is_start = text == "/start" or text.startswith("/start ")
+
+    if is_start:
+        try:
+            sync_bot_profile()
+        except Exception as error:
+            print(f"Telegram profile sync failed: {type(error).__name__}: {error}", flush=True)
 
     if not _approved(user):
-        _send(chat_id, "درخواست شما ثبت شد. برای استفاده از ربات باید یک مدیر دسترسی شما را تأیید کند.")
+        _send(chat_id, PENDING_START_MESSAGE)
+        return
+
+    if is_start:
+        _send(chat_id, START_MESSAGE, _main_keyboard(str(user["role"])))
         return
 
     if _admin(user) and user.get("pending_action") == "add_member" and text:

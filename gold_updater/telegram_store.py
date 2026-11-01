@@ -11,6 +11,7 @@ from vercel.blob import sync as blob
 
 USER_PREFIX = "telegram/users/"
 AUDIT_PREFIX = "telegram/audit/"
+PROFILE_STATE_PATH = "telegram/profile/state.json.enc"
 
 
 def _cipher() -> Fernet:
@@ -114,5 +115,28 @@ def audit(actor_id: int, action: str, target_id: int) -> None:
         _encode(event),
         access="private",
         content_type="application/octet-stream",
+        cache_control_max_age=0,
+    )
+
+
+def get_profile_version() -> str | None:
+    try:
+        state = _decode(blob.get_blob(PROFILE_STATE_PATH, access="private").body)
+    except blob.BlobNotFoundError:
+        return None
+    return str(state.get("version") or "") or None
+
+
+def save_profile_version(version: str) -> None:
+    state = {
+        "version": version,
+        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    blob.put_blob(
+        PROFILE_STATE_PATH,
+        _encode(state),
+        access="private",
+        content_type="application/octet-stream",
+        allow_overwrite=True,
         cache_control_max_age=0,
     )

@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler
 
 from api.common import authorized, send_json
 from gold_updater.telegram_api import telegram_api
+from gold_updater.telegram_profile import sync_bot_profile
 
 
 class handler(BaseHTTPRequestHandler):
@@ -36,6 +37,7 @@ class handler(BaseHTTPRequestHandler):
                     "language_code": "fa",
                 },
             )
+            profile_updated = sync_bot_profile()
             send_json(
                 self,
                 200,
@@ -44,6 +46,7 @@ class handler(BaseHTTPRequestHandler):
                     "bot_username": (identity.get("result") or {}).get("username"),
                     "webhook": bool(webhook.get("ok")),
                     "commands": bool(commands.get("ok")),
+                    "profile_updated": profile_updated,
                 },
             )
         except Exception as error:
