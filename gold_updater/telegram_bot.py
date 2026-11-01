@@ -13,13 +13,18 @@ ADMIN_BUTTON = "⚙️ داشبورد مدیریت"
 STATUS_LABELS = {"pending": "در انتظار تأیید", "approved": "فعال", "removed": "حذف‌شده"}
 ROLE_LABELS = {"user": "کاربر", "admin": "مدیر"}
 FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+UI_VERSION = 2
 
 
 def _api(method: str, payload: dict[str, object]) -> dict[str, object]:
     return telegram_api(method, payload)
 
 
-def _send(chat_id: int, text: str, reply_markup: dict[str, object] | None = None) -> None:
+def _message_payload(
+    chat_id: int,
+    text: str,
+    reply_markup: dict[str, object] | None = None,
+) -> dict[str, object]:
     payload: dict[str, object] = {
         "chat_id": chat_id,
         "text": text,
@@ -28,7 +33,41 @@ def _send(chat_id: int, text: str, reply_markup: dict[str, object] | None = None
     }
     if reply_markup:
         payload["reply_markup"] = reply_markup
-    _api("sendMessage", payload)
+    return payload
+
+
+def _send(chat_id: int, text: str, reply_markup: dict[str, object] | None = None) -> int:
+    response = _api("sendMessage", _message_payload(chat_id, text, reply_markup))
+    result = response.get("result")
+    if not isinstance(result, dict) or "message_id" not in result:
+        raise RuntimeError("Telegram sendMessage returned no message_id")
+    return int(result["message_id"])
+
+
+def _edit(
+    chat_id: int,
+    message_id: int,
+    text: str,
+    reply_markup: dict[str, object] | None = None,
+) -> bool:
+    payload = _message_payload(chat_id, text, reply_markup)
+    payload["message_id"] = message_id
+    try:
+        _api("editMessageText", payload)
+        return True
+    except RuntimeError as error:
+        if "message is not modified" in str(error).casefold():
+            return True
+        return False
+
+
+def _delete(chat_id: int, message_id: int | None) -> None:
+    if not message_id:
+        return
+    try:
+        _api("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+    except RuntimeError:
+        pass
 
 
 def _answer(callback_id: str, text: str | None = None) -> None:
@@ -38,23 +77,85 @@ def _answer(callback_id: str, text: str | None = None) -> None:
     _api("answerCallbackQuery", payload)
 
 
+def _panel(
+    user: dict[str, object],
+    chat_id: int,
+    text: str,
+    reply_markup: dict[str, object] | None = None,
+    *,
+    message_id: int | None = None,
+) -> None:
+    target_id = message_id or int(user.get("panel_message_id") or 0) or None
+    if target_id and _edit(chat_id, target_id, text, reply_markup):
+        if user.get("panel_message_id") != target_id:
+            user["panel_message_id"] = target_id
+            save_user(user)
+        return
+
+    _delete(chat_id, target_id)
+    user["panel_message_id"] = _send(chat_id, text, reply_markup)
+    save_user(user)
+
+
+def _remove_legacy_keyboard(user: dict[str, object], chat_id: int) -> None:
+    if user.get("ui_version") == UI_VERSION:
+        return
+    cleanup_id = _send(chat_id, "در حال آماده‌سازی منوی جدید…", {"remove_keyboard": True})
+    _delete(chat_id, cleanup_id)
+    user["ui_version"] = UI_VERSION
+    save_user(user)
+
+
+def _delete_incoming(message: dict[str, object], chat_id: int) -> None:
+    message_id = message.get("message_id")
+    if isinstance(message_id, int):
+        _delete(chat_id, message_id)
+
+
 def _main_keyboard(role: str) -> dict[str, object]:
-    keyboard = [[{"text": REPORT_BUTTON}]]
+    rows = [[{"text": REPORT_BUTTON, "callback_data": "nav:report"}]]
     if role == "admin":
-        keyboard.append([{"text": ADMIN_BUTTON}])
-    return {"keyboard": keyboard, "resize_keyboard": True, "is_persistent": True}
+        rows.append([{"text": ADMIN_BUTTON, "callback_data": "nav:admin"}])
+    return {"inline_keyboard": rows}
 
 
-def _admin_menu(chat_id: int) -> None:
-    _send(
+def _report_keyboard(role: str) -> dict[str, object]:
+    rows = [[{"text": "🔄 بروزرسانی گزارش", "callback_data": "nav:report"}]]
+    if role == "admin":
+        rows.append([{"text": ADMIN_BUTTON, "callback_data": "nav:admin"}])
+    rows.append([{"text": "🏠 منوی اصلی", "callback_data": "nav:home"}])
+    return {"inline_keyboard": rows}
+
+
+def _show_home(
+    user: dict[str, object],
+    chat_id: int,
+    *,
+    message_id: int | None = None,
+) -> None:
+    _panel(user, chat_id, START_MESSAGE, _main_keyboard(str(user["role"])), message_id=message_id)
+
+
+def _admin_menu(
+    user: dict[str, object],
+    chat_id: int,
+    *,
+    message_id: int | None = None,
+    notice: str | None = None,
+) -> None:
+    prefix = f"{notice}\n\n" if notice else ""
+    _panel(
+        user,
         chat_id,
-        "<b>داشبورد مدیریت</b>\nگزینه موردنظر را انتخاب کنید:",
+        f"{prefix}<b>داشبورد مدیریت</b>\nگزینه موردنظر را انتخاب کنید:",
         {
             "inline_keyboard": [
                 [{"text": "👥 فهرست کاربران", "callback_data": "admin:users"}],
                 [{"text": "➕ افزودن عضو", "callback_data": "admin:add"}],
+                [{"text": "🏠 منوی اصلی", "callback_data": "nav:home"}],
             ]
         },
+        message_id=message_id,
     )
 
 
@@ -64,30 +165,93 @@ def _display_name(user: dict[str, object]) -> str:
     return f"@{username}" if username else (name or str(user["id"]))
 
 
-def _users_menu(chat_id: int) -> None:
+def _users_menu(
+    actor: dict[str, object],
+    chat_id: int,
+    *,
+    message_id: int | None = None,
+    selected_id: int | None = None,
+) -> None:
     users = list_users()
     if not users:
-        _send(chat_id, "هنوز کاربری ثبت نشده است.")
-        return
-    for user in users:
-        status = str(user.get("status", "pending"))
-        role = str(user.get("role", "user"))
-        text = (
-            f"<b>{html.escape(_display_name(user))}</b>\n"
-            f"شناسه: <code>{user['id']}</code>\n"
-            f"وضعیت: {STATUS_LABELS.get(status, status)}\n"
-            f"نقش: {ROLE_LABELS.get(role, role)}"
+        _panel(
+            actor,
+            chat_id,
+            "<b>فهرست کاربران</b>\n\nهنوز کاربری ثبت نشده است.",
+            {
+                "inline_keyboard": [
+                    [{"text": "↩️ بازگشت به مدیریت", "callback_data": "nav:admin"}],
+                    [{"text": "🏠 منوی اصلی", "callback_data": "nav:home"}],
+                ]
+            },
+            message_id=message_id,
         )
-        actions: list[dict[str, str]] = []
-        if status != "approved":
-            actions.append({"text": "✅ تأیید", "callback_data": f"user:approve:{user['id']}"})
-        elif role == "user":
-            actions.append({"text": "⬆️ ارتقا به مدیر", "callback_data": f"user:promote:{user['id']}"})
-        elif not user.get("root_admin"):
-            actions.append({"text": "⬇️ تنزل به کاربر", "callback_data": f"user:demote:{user['id']}"})
-        if not user.get("root_admin") and status != "removed":
-            actions.append({"text": "🗑 حذف دسترسی", "callback_data": f"user:remove:{user['id']}"})
-        _send(chat_id, text, {"inline_keyboard": [actions]} if actions else None)
+        return
+
+    index = next((i for i, item in enumerate(users) if int(item["id"]) == selected_id), 0)
+    target = users[index]
+    status = str(target.get("status", "pending"))
+    role = str(target.get("role", "user"))
+    text = (
+        "<b>فهرست کاربران</b>\n"
+        f"کاربر {_fa_number(index + 1)} از {_fa_number(len(users))}\n\n"
+        f"<b>{html.escape(_display_name(target))}</b>\n"
+        f"شناسه: <code>{target['id']}</code>\n"
+        f"وضعیت: {STATUS_LABELS.get(status, status)}\n"
+        f"نقش: {ROLE_LABELS.get(role, role)}"
+    )
+
+    rows: list[list[dict[str, str]]] = []
+    actions: list[dict[str, str]] = []
+    if status != "approved":
+        actions.append({"text": "✅ تأیید", "callback_data": f"user:approve:{target['id']}"})
+    elif role == "user":
+        actions.append({"text": "⬆️ ارتقا به مدیر", "callback_data": f"user:promote:{target['id']}"})
+    elif not target.get("root_admin"):
+        actions.append({"text": "⬇️ تنزل به کاربر", "callback_data": f"user:demote:{target['id']}"})
+    if not target.get("root_admin") and status != "removed":
+        actions.append({"text": "🗑 حذف دسترسی", "callback_data": f"user:remove:{target['id']}"})
+    if actions:
+        rows.append(actions)
+
+    if len(users) > 1:
+        previous_user = users[(index - 1) % len(users)]
+        next_user = users[(index + 1) % len(users)]
+        rows.append(
+            [
+                {"text": "◀️ قبلی", "callback_data": f"admin:users:{previous_user['id']}"},
+                {"text": "بعدی ▶️", "callback_data": f"admin:users:{next_user['id']}"},
+            ]
+        )
+    rows.extend(
+        [
+            [{"text": "↩️ بازگشت به مدیریت", "callback_data": "nav:admin"}],
+            [{"text": "🏠 منوی اصلی", "callback_data": "nav:home"}],
+        ]
+    )
+    _panel(actor, chat_id, text, {"inline_keyboard": rows}, message_id=message_id)
+
+
+def _add_member_prompt(
+    user: dict[str, object],
+    chat_id: int,
+    *,
+    message_id: int | None = None,
+    error: str | None = None,
+) -> None:
+    prefix = f"{error}\n\n" if error else ""
+    _panel(
+        user,
+        chat_id,
+        f"{prefix}<b>افزودن عضو</b>\n\nنام کاربری (با یا بدون @) یا شناسه عددی کاربر را ارسال کنید.",
+        {
+            "inline_keyboard": [
+                [{"text": "↩️ انصراف و بازگشت", "callback_data": "admin:cancel_add"}],
+                [{"text": "🏠 منوی اصلی", "callback_data": "nav:home"}],
+            ]
+        },
+        message_id=message_id,
+    )
 
 
 def _fa_number(value: float | int) -> str:
@@ -134,12 +298,36 @@ def _report_text() -> str:
     return "\n".join(lines)
 
 
+def _show_report(
+    user: dict[str, object],
+    chat_id: int,
+    *,
+    message_id: int | None = None,
+) -> None:
+    _panel(
+        user,
+        chat_id,
+        _report_text(),
+        _report_keyboard(str(user["role"])),
+        message_id=message_id,
+    )
+
+
 def _approved(user: dict[str, object]) -> bool:
     return user.get("status") == "approved"
 
 
 def _admin(user: dict[str, object]) -> bool:
     return _approved(user) and user.get("role") == "admin"
+
+
+def _show_pending(
+    user: dict[str, object],
+    chat_id: int,
+    *,
+    message_id: int | None = None,
+) -> None:
+    _panel(user, chat_id, PENDING_START_MESSAGE, message_id=message_id)
 
 
 def _handle_message(message: dict[str, object]) -> None:
@@ -151,6 +339,8 @@ def _handle_message(message: dict[str, object]) -> None:
     user = ensure_user(sender)
     text = str(message.get("text") or "").strip()
     is_start = text == "/start" or text.startswith("/start ")
+    _delete_incoming(message, chat_id)
+    _remove_legacy_keyboard(user, chat_id)
 
     if is_start:
         try:
@@ -159,16 +349,16 @@ def _handle_message(message: dict[str, object]) -> None:
             print(f"Telegram profile sync failed: {type(error).__name__}: {error}", flush=True)
 
     if not _approved(user):
-        _send(chat_id, PENDING_START_MESSAGE)
+        _show_pending(user, chat_id)
         return
 
     if is_start:
-        _send(chat_id, START_MESSAGE, _main_keyboard(str(user["role"])))
+        user.pop("pending_action", None)
+        save_user(user)
+        _show_home(user, chat_id)
         return
 
     if _admin(user) and user.get("pending_action") == "add_member" and text:
-        user.pop("pending_action", None)
-        save_user(user)
         target = find_user(text)
         if target is None and text.isdigit():
             target = create_user_by_id(int(text))
@@ -177,29 +367,39 @@ def _handle_message(message: dict[str, object]) -> None:
             target.setdefault("role", "user")
             save_user(target)
         if target is None:
-            _send(
+            _add_member_prompt(
+                user,
                 chat_id,
-                "این نام کاربری هنوز توسط ربات شناخته نشده است. از کاربر بخواهید یک‌بار /start را ارسال کند، یا شناسه عددی او را وارد کنید.",
+                error=(
+                    "⚠️ این نام کاربری هنوز توسط ربات شناخته نشده است. از کاربر بخواهید یک‌بار "
+                    "/start را ارسال کند، یا شناسه عددی او را وارد کنید."
+                ),
             )
         else:
+            user.pop("pending_action", None)
+            save_user(user)
             audit(int(user["id"]), "approve", int(target["id"]))
-            _send(chat_id, f"دسترسی {html.escape(_display_name(target))} با موفقیت فعال شد.")
+            _admin_menu(
+                user,
+                chat_id,
+                notice=f"✅ دسترسی {html.escape(_display_name(target))} با موفقیت فعال شد.",
+            )
         return
 
     if text == REPORT_BUTTON or text == "/report":
-        _send(chat_id, "در حال آماده‌سازی گزارش…")
-        _send(chat_id, _report_text(), _main_keyboard(str(user["role"])))
+        _show_report(user, chat_id)
     elif text == ADMIN_BUTTON or text == "/admin":
         if _admin(user):
-            _admin_menu(chat_id)
+            _admin_menu(user, chat_id)
         else:
-            _send(chat_id, "شما به بخش مدیریت دسترسی ندارید.", _main_keyboard(str(user["role"])))
+            _panel(
+                user,
+                chat_id,
+                "شما به بخش مدیریت دسترسی ندارید.",
+                _main_keyboard(str(user["role"])),
+            )
     else:
-        _send(
-            chat_id,
-            "خوش آمدید. برای مشاهده آخرین قیمت و محاسبات فایل، «گزارش» را انتخاب کنید.",
-            _main_keyboard(str(user["role"])),
-        )
+        _show_home(user, chat_id)
 
 
 def _handle_callback(callback: dict[str, object]) -> None:
@@ -209,26 +409,60 @@ def _handle_callback(callback: dict[str, object]) -> None:
     if not isinstance(sender, dict) or not isinstance(chat, dict):
         return
     user = ensure_user(sender)
+    _remove_legacy_keyboard(user, int(chat["id"]))
     callback_id = str(callback["id"])
     chat_id = int(chat["id"])
+    message_id = int(message.get("message_id") or 0) or None
+    data = str(callback.get("data") or "")
+
+    if not _approved(user):
+        _answer(callback_id, "دسترسی شما هنوز تأیید نشده است.")
+        _show_pending(user, chat_id, message_id=message_id)
+        return
+
+    if data == "nav:home":
+        _answer(callback_id)
+        user.pop("pending_action", None)
+        save_user(user)
+        _show_home(user, chat_id, message_id=message_id)
+        return
+    if data == "nav:report":
+        _answer(callback_id)
+        _show_report(user, chat_id, message_id=message_id)
+        return
+    if data == "nav:admin":
+        if not _admin(user):
+            _answer(callback_id, "دسترسی مدیریت ندارید.")
+            return
+        _answer(callback_id)
+        user.pop("pending_action", None)
+        save_user(user)
+        _admin_menu(user, chat_id, message_id=message_id)
+        return
+
     if not _admin(user):
         _answer(callback_id, "دسترسی مدیریت ندارید.")
         return
 
-    data = str(callback.get("data") or "")
-    if data == "admin:users":
+    if data == "admin:users" or data.startswith("admin:users:"):
+        selected_id: int | None = None
+        parts = data.split(":")
+        if len(parts) == 3 and parts[2].isdigit():
+            selected_id = int(parts[2])
         _answer(callback_id)
-        _users_menu(chat_id)
+        _users_menu(user, chat_id, message_id=message_id, selected_id=selected_id)
         return
     if data == "admin:add":
+        _answer(callback_id)
         user["pending_action"] = "add_member"
         save_user(user)
+        _add_member_prompt(user, chat_id, message_id=message_id)
+        return
+    if data == "admin:cancel_add":
         _answer(callback_id)
-        _send(
-            chat_id,
-            "نام کاربری (با یا بدون @) یا شناسه عددی کاربر را ارسال کنید.",
-            {"force_reply": True, "input_field_placeholder": "@username یا 123456789"},
-        )
+        user.pop("pending_action", None)
+        save_user(user)
+        _admin_menu(user, chat_id, message_id=message_id)
         return
 
     parts = data.split(":")
@@ -260,7 +494,7 @@ def _handle_callback(callback: dict[str, object]) -> None:
     save_user(target)
     audit(int(user["id"]), action, target_id)
     _answer(callback_id, "انجام شد.")
-    _users_menu(chat_id)
+    _users_menu(user, chat_id, message_id=message_id, selected_id=target_id)
 
 
 def handle_update(update: dict[str, object]) -> None:

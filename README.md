@@ -43,6 +43,8 @@ Access is approval-only:
 - administrators can approve, promote, demote, or remove users, and can add a member by known username or numeric Telegram ID;
 - user records and admin audit events are encrypted before being written to the existing private Blob store.
 
+The bot uses one editable inline panel per conversation. Report, dashboard, user-management, refresh, back, and home actions replace that panel instead of appending messages. User-management is paginated one account at a time, typed commands are removed after processing, and `/start` removes the legacy persistent reply keyboard during migration.
+
 The report reads two independent sources: TGJU's newest published 18K daily high and the latest cached calculation row in the macro-enabled workbook. It labels the calculation date explicitly and explains every displayed model value in Persian.
 
 Additional sensitive production configuration:
