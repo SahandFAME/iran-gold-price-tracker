@@ -39,11 +39,11 @@ The same isolated project also exposes a Persian Telegram bot. Telegram sends si
 Access is approval-only:
 
 - the numeric `TELEGRAM_ADMIN_ID` is the protected root administrator;
-- new users are recorded as pending after they send `/start` and cannot open reports;
-- administrators can approve, promote, demote, or remove users, and can add a member by known username or numeric Telegram ID;
+- new users are recorded as pending after they send `/start` and cannot open reports; every access request notifies all approved administrators with Approve and Deny buttons;
+- administrators can approve, deny, promote, demote, or remove users, and can add a member by known username or numeric Telegram ID;
 - user records and admin audit events are encrypted before being written to the existing private Blob store.
 
-The main menu uses Telegram's persistent bottom keyboard outside the chat messages, with Report available to every approved user and the Admin Dashboard added for administrators. User messages are never deleted. The bot tracks only its latest transient answer: each new menu or admin answer deletes the preceding answer before it is sent. Reports are intentionally not tracked or deleted, so users retain their report history. User-management remains paginated one account at a time.
+The main menu uses Telegram's persistent bottom keyboard outside the chat messages, with Report available to every approved user and the Admin Dashboard added for administrators. User messages are never deleted. The bot tracks only its latest transient answer: each new menu or admin answer deletes the preceding answer before it is sent. Reports are intentionally not tracked or deleted, so users retain their report history. Returning to the main menu shows a compact menu message instead of repeating the welcome text. The admin dashboard shows only relevant access statistics and actions, with filtered pending and approved user lists and paginated user/role management.
 
 The report reads two independent sources: TGJU's live 18K quote and the latest cached calculation row in the macro-enabled workbook. It displays only the requested analytical values with their Persian labels and explanations; historical reports remain in the Telegram chat.
 

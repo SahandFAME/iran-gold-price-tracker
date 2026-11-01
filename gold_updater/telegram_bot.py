@@ -14,6 +14,7 @@ STATUS_LABELS = {"pending": "در انتظار تأیید", "approved": "فعا�
 ROLE_LABELS = {"user": "کاربر", "admin": "مدیر"}
 FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
 UI_VERSION = 5
+MAIN_MENU_MESSAGE = "<b>منوی اصلی</b>\nگزینه موردنظر را انتخاب کنید:"
 
 
 def _api(method: str, payload: dict[str, object]) -> dict[str, object]:
@@ -58,6 +59,58 @@ def _answer(callback_id: str, text: str | None = None) -> None:
     if text:
         payload["text"] = text
     _api("answerCallbackQuery", payload)
+
+
+def _edit_request_notification(
+    chat_id: int,
+    message_id: int | None,
+    target: dict[str, object],
+    decision: str,
+    actor: dict[str, object] | None = None,
+) -> None:
+    if not message_id:
+        return
+    actor_text = f"\nمدیر: {html.escape(_display_name(actor))}" if actor else ""
+    text = (
+        "<b>درخواست دسترسی</b>\n\n"
+        f"کاربر: <b>{html.escape(_display_name(target))}</b>\n"
+        f"شناسه: <code>{target['id']}</code>\n\n"
+        f"{decision}{actor_text}"
+    )
+    payload = _message_payload(chat_id, text, {"inline_keyboard": []})
+    payload["message_id"] = message_id
+    try:
+        _api("editMessageText", payload)
+    except RuntimeError:
+        pass
+
+
+def _notify_admins_of_request(requester: dict[str, object]) -> None:
+    text = (
+        "<b>درخواست دسترسی جدید</b>\n\n"
+        f"کاربر: <b>{html.escape(_display_name(requester))}</b>\n"
+        f"نام کاربری: "
+        f"{html.escape('@' + str(requester['username'])) if requester.get('username') else 'ثبت نشده'}\n"
+        f"شناسه: <code>{requester['id']}</code>"
+    )
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {"text": "✅ تأیید", "callback_data": f"request:approve:{requester['id']}"},
+                {"text": "❌ رد", "callback_data": f"request:deny:{requester['id']}"},
+            ]
+        ]
+    }
+    try:
+        admins = [item for item in list_users() if _admin(item)]
+    except Exception as error:
+        print(f"Unable to list admins for access request: {type(error).__name__}: {error}", flush=True)
+        return
+    for admin in admins:
+        try:
+            _send(int(admin["id"]), text, keyboard)
+        except RuntimeError as error:
+            print(f"Unable to notify Telegram admin {admin['id']}: {error}", flush=True)
 
 
 def _migrate_ui(user: dict[str, object], chat_id: int) -> None:
@@ -115,8 +168,10 @@ def _show_home(
     chat_id: int,
     *,
     message_id: int | None = None,
+    welcome: bool = False,
 ) -> None:
-    _answer_message(user, chat_id, START_MESSAGE, _main_keyboard(str(user["role"])), message_id=message_id)
+    text = START_MESSAGE if welcome else MAIN_MENU_MESSAGE
+    _answer_message(user, chat_id, text, _main_keyboard(str(user["role"])), message_id=message_id)
 
 
 def _admin_menu(
@@ -126,16 +181,33 @@ def _admin_menu(
     message_id: int | None = None,
     notice: str | None = None,
 ) -> None:
+    users = list_users()
+    approved_count = sum(item.get("status") == "approved" for item in users)
+    pending_count = sum(item.get("status") == "pending" for item in users)
+    admin_count = sum(_admin(item) for item in users)
+    removed_count = sum(item.get("status") == "removed" for item in users)
     prefix = f"{notice}\n\n" if notice else ""
     _answer_message(
         user,
         chat_id,
-        f"{prefix}<b>داشبورد مدیریت</b>\nگزینه موردنظر را انتخاب کنید:",
+        (
+            f"{prefix}<b>پنل مدیریت</b>\n\n"
+            f"کاربران مجاز: {_fa_number(approved_count)}\n"
+            f"درخواست‌های در انتظار: {_fa_number(pending_count)}\n"
+            f"مدیران: {_fa_number(admin_count)}\n"
+            f"دسترسی‌های لغوشده: {_fa_number(removed_count)}"
+        ),
         {
             "inline_keyboard": [
-                [{"text": "👥 فهرست کاربران", "callback_data": "admin:users"}],
-                [{"text": "➕ افزودن عضو", "callback_data": "admin:add"}],
-                [{"text": "🏠 منوی اصلی", "callback_data": "nav:home"}],
+                [
+                    {"text": "✅ کاربران مجاز", "callback_data": "admin:approved"},
+                    {"text": "⏳ درخواست‌های دسترسی", "callback_data": "admin:requests"},
+                ],
+                [
+                    {"text": "👥 مدیریت کاربران و نقش‌ها", "callback_data": "admin:users"},
+                    {"text": "➕ افزودن عضو", "callback_data": "admin:add"},
+                ],
+                [{"text": "🏠 بازگشت به منوی اصلی", "callback_data": "nav:home"}],
             ]
         },
         message_id=message_id,
@@ -154,13 +226,23 @@ def _users_menu(
     *,
     message_id: int | None = None,
     selected_id: int | None = None,
+    status_filter: str | None = None,
 ) -> None:
-    users = list_users()
+    all_users = list_users()
+    users = [item for item in all_users if item.get("status") == status_filter] if status_filter else all_users
+    title = {
+        "approved": "کاربران مجاز",
+        "pending": "درخواست‌های دسترسی",
+    }.get(status_filter, "مدیریت کاربران و نقش‌ها")
+    callback_prefix = {
+        "approved": "admin:approved",
+        "pending": "admin:requests",
+    }.get(status_filter, "admin:users")
     if not users:
         _answer_message(
             actor,
             chat_id,
-            "<b>فهرست کاربران</b>\n\nهنوز کاربری ثبت نشده است.",
+            f"<b>{title}</b>\n\nموردی برای نمایش وجود ندارد.",
             {
                 "inline_keyboard": [
                     [{"text": "↩️ بازگشت به مدیریت", "callback_data": "nav:admin"}],
@@ -176,7 +258,7 @@ def _users_menu(
     status = str(target.get("status", "pending"))
     role = str(target.get("role", "user"))
     text = (
-        "<b>فهرست کاربران</b>\n"
+        f"<b>{title}</b>\n"
         f"کاربر {_fa_number(index + 1)} از {_fa_number(len(users))}\n\n"
         f"<b>{html.escape(_display_name(target))}</b>\n"
         f"شناسه: <code>{target['id']}</code>\n"
@@ -186,8 +268,11 @@ def _users_menu(
 
     rows: list[list[dict[str, str]]] = []
     actions: list[dict[str, str]] = []
-    if status != "approved":
+    if status == "pending":
         actions.append({"text": "✅ تأیید", "callback_data": f"user:approve:{target['id']}"})
+        actions.append({"text": "❌ رد", "callback_data": f"user:deny:{target['id']}"})
+    elif status == "removed":
+        actions.append({"text": "✅ فعال‌سازی مجدد", "callback_data": f"user:approve:{target['id']}"})
     elif role == "user":
         actions.append({"text": "⬆️ ارتقا به مدیر", "callback_data": f"user:promote:{target['id']}"})
     elif not target.get("root_admin"):
@@ -202,8 +287,8 @@ def _users_menu(
         next_user = users[(index + 1) % len(users)]
         rows.append(
             [
-                {"text": "◀️ قبلی", "callback_data": f"admin:users:{previous_user['id']}"},
-                {"text": "بعدی ▶️", "callback_data": f"admin:users:{next_user['id']}"},
+                {"text": "◀️ قبلی", "callback_data": f"{callback_prefix}:{previous_user['id']}"},
+                {"text": "بعدی ▶️", "callback_data": f"{callback_prefix}:{next_user['id']}"},
             ]
         )
     rows.extend(
@@ -296,6 +381,22 @@ def _show_pending(
     _answer_message(user, chat_id, PENDING_START_MESSAGE, message_id=message_id)
 
 
+def _notify_user_of_decision(target: dict[str, object], approved: bool) -> None:
+    if approved:
+        text = (
+            "✅ <b>درخواست دسترسی شما تأیید شد.</b>\n\n"
+            "اکنون می‌توانید از گزارش‌های ربات استفاده کنید."
+        )
+        keyboard = _main_keyboard(str(target.get("role", "user")))
+    else:
+        text = "❌ <b>درخواست دسترسی شما توسط مدیر رد شد.</b>"
+        keyboard = {"remove_keyboard": True}
+    try:
+        _answer_message(target, int(target["id"]), text, keyboard)
+    except RuntimeError as error:
+        print(f"Unable to notify Telegram user {target['id']}: {error}", flush=True)
+
+
 def _handle_message(message: dict[str, object]) -> None:
     sender = message.get("from") or {}
     chat = message.get("chat") or {}
@@ -314,13 +415,19 @@ def _handle_message(message: dict[str, object]) -> None:
             print(f"Telegram profile sync failed: {type(error).__name__}: {error}", flush=True)
 
     if not _approved(user):
+        if is_start:
+            if user.get("status") == "removed":
+                user["status"] = "pending"
+                user["role"] = "user"
+                save_user(user)
+            _notify_admins_of_request(user)
         _show_pending(user, chat_id)
         return
 
     if is_start:
         user.pop("pending_action", None)
         save_user(user)
-        _show_home(user, chat_id)
+        _show_home(user, chat_id, welcome=True)
         return
 
     if _admin(user) and user.get("pending_action") == "add_member" and text:
@@ -363,6 +470,8 @@ def _handle_message(message: dict[str, object]) -> None:
                 "شما به بخش مدیریت دسترسی ندارید.",
                 _main_keyboard(str(user["role"])),
             )
+    elif text in {"منوی اصلی", "🏠 منوی اصلی"}:
+        _show_home(user, chat_id)
     else:
         _show_home(user, chat_id)
 
@@ -409,13 +518,56 @@ def _handle_callback(callback: dict[str, object]) -> None:
         _answer(callback_id, "دسترسی مدیریت ندارید.")
         return
 
-    if data == "admin:users" or data.startswith("admin:users:"):
+    if data.startswith("request:"):
+        parts = data.split(":")
+        if len(parts) != 3 or parts[1] not in {"approve", "deny"} or not parts[2].isdigit():
+            _answer(callback_id, "درخواست نامعتبر است.")
+            return
+        action, target_id = parts[1], int(parts[2])
+        target = get_user(target_id)
+        if target is None:
+            _answer(callback_id, "کاربر پیدا نشد.")
+            return
+        if target.get("status") != "pending":
+            decision = "✅ قبلاً تأیید شده است." if target.get("status") == "approved" else "❌ قبلاً رد شده است."
+            _answer(callback_id, "این درخواست قبلاً بررسی شده است.")
+            _edit_request_notification(chat_id, message_id, target, decision)
+            return
+        approved = action == "approve"
+        target["status"] = "approved" if approved else "removed"
+        target["role"] = "user"
+        save_user(target)
+        audit(int(user["id"]), action, target_id)
+        _answer(callback_id, "درخواست تأیید شد." if approved else "درخواست رد شد.")
+        _edit_request_notification(
+            chat_id,
+            message_id,
+            target,
+            "✅ دسترسی تأیید شد." if approved else "❌ درخواست رد شد.",
+            user,
+        )
+        _notify_user_of_decision(target, approved)
+        return
+
+    menu_filters = {
+        "admin:users": None,
+        "admin:approved": "approved",
+        "admin:requests": "pending",
+    }
+    menu_prefix = next((prefix for prefix in menu_filters if data == prefix or data.startswith(prefix + ":")), None)
+    if menu_prefix:
         selected_id: int | None = None
         parts = data.split(":")
         if len(parts) == 3 and parts[2].isdigit():
             selected_id = int(parts[2])
         _answer(callback_id)
-        _users_menu(user, chat_id, message_id=message_id, selected_id=selected_id)
+        _users_menu(
+            user,
+            chat_id,
+            message_id=message_id,
+            selected_id=selected_id,
+            status_filter=menu_filters[menu_prefix],
+        )
         return
     if data == "admin:add":
         _answer(callback_id)
@@ -439,12 +591,12 @@ def _handle_callback(callback: dict[str, object]) -> None:
     if target is None:
         _answer(callback_id, "کاربر پیدا نشد.")
         return
-    if target.get("root_admin") and action in {"demote", "remove"}:
+    if target.get("root_admin") and action in {"demote", "remove", "deny"}:
         _answer(callback_id, "مدیر اصلی قابل حذف یا تنزل نیست.")
         return
     if action == "approve":
         target["status"] = "approved"
-        target.setdefault("role", "user")
+        target["role"] = "user"
     elif action == "promote":
         target["status"] = "approved"
         target["role"] = "admin"
@@ -453,12 +605,17 @@ def _handle_callback(callback: dict[str, object]) -> None:
     elif action == "remove":
         target["status"] = "removed"
         target["role"] = "user"
+    elif action == "deny":
+        target["status"] = "removed"
+        target["role"] = "user"
     else:
         _answer(callback_id, "عملیات نامعتبر است.")
         return
     save_user(target)
     audit(int(user["id"]), action, target_id)
     _answer(callback_id, "انجام شد.")
+    if action in {"approve", "deny"}:
+        _notify_user_of_decision(target, action == "approve")
     _users_menu(user, chat_id, message_id=message_id, selected_id=target_id)
 
 

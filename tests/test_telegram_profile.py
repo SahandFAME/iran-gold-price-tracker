@@ -231,6 +231,155 @@ def test_admin_bottom_menu_contains_report_and_dashboard() -> None:
     }
 
 
+def test_pending_start_notifies_every_admin_with_approval_buttons(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+    requester = {
+        "id": 22,
+        "status": "pending",
+        "role": "user",
+        "username": "new_user",
+        "first_name": "New",
+        "ui_version": telegram_bot.UI_VERSION,
+    }
+    admins = [
+        {"id": 1, "status": "approved", "role": "admin", "root_admin": True},
+        {"id": 2, "status": "approved", "role": "admin"},
+        requester,
+    ]
+    next_message_id = iter((101, 102, 103))
+    monkeypatch.setattr(telegram_bot, "ensure_user", lambda sender: requester)
+    monkeypatch.setattr(telegram_bot, "list_users", lambda: admins)
+    monkeypatch.setattr(telegram_bot, "save_user", lambda value: None)
+    monkeypatch.setattr(telegram_bot, "sync_bot_profile", lambda: False)
+    monkeypatch.setattr(
+        telegram_bot,
+        "_api",
+        lambda method, payload: calls.append((method, payload))
+        or ({"ok": True, "result": {"message_id": next(next_message_id)}} if method == "sendMessage" else {"ok": True}),
+    )
+
+    telegram_bot._handle_message(
+        {
+            "from": {"id": 22, "username": "new_user", "first_name": "New"},
+            "chat": {"id": 22, "type": "private"},
+            "message_id": 7,
+            "text": "/start",
+        }
+    )
+
+    sent = [payload for method, payload in calls if method == "sendMessage"]
+    assert [payload["chat_id"] for payload in sent] == [1, 2, 22]
+    buttons = sent[0]["reply_markup"]["inline_keyboard"][0]
+    assert [button["callback_data"] for button in buttons] == ["request:approve:22", "request:deny:22"]
+    assert "درخواست دسترسی شما ثبت شد" in sent[2]["text"]
+
+
+def test_main_menu_does_not_repeat_welcome_message(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+    user = {"id": 1, "status": "approved", "role": "admin", "ui_version": telegram_bot.UI_VERSION}
+    monkeypatch.setattr(telegram_bot, "ensure_user", lambda sender: user)
+    monkeypatch.setattr(telegram_bot, "save_user", lambda value: None)
+    monkeypatch.setattr(
+        telegram_bot,
+        "_api",
+        lambda method, payload: calls.append((method, payload))
+        or ({"ok": True, "result": {"message_id": 50}} if method == "sendMessage" else {"ok": True}),
+    )
+
+    telegram_bot._handle_message(
+        {"from": {"id": 1}, "chat": {"id": 1, "type": "private"}, "message_id": 9, "text": "منوی اصلی"}
+    )
+
+    sent = [payload for method, payload in calls if method == "sendMessage"]
+    assert sent[0]["text"] == telegram_bot.MAIN_MENU_MESSAGE
+    assert sent[0]["text"] != telegram_profile.START_MESSAGE
+
+
+def test_admin_dashboard_shows_relevant_counts_and_actions(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+    admin = {"id": 1, "status": "approved", "role": "admin", "root_admin": True}
+    users = [
+        admin,
+        {"id": 2, "status": "approved", "role": "user"},
+        {"id": 3, "status": "pending", "role": "user"},
+        {"id": 4, "status": "removed", "role": "user"},
+    ]
+    monkeypatch.setattr(telegram_bot, "list_users", lambda: users)
+    monkeypatch.setattr(telegram_bot, "save_user", lambda value: None)
+    monkeypatch.setattr(
+        telegram_bot,
+        "_api",
+        lambda method, payload: calls.append((method, payload))
+        or ({"ok": True, "result": {"message_id": 60}} if method == "sendMessage" else {"ok": True}),
+    )
+
+    telegram_bot._admin_menu(admin, 1)
+
+    payload = next(payload for method, payload in calls if method == "sendMessage")
+    assert "کاربران مجاز: ۲" in payload["text"]
+    assert "درخواست‌های در انتظار: ۱" in payload["text"]
+    assert "مدیران: ۱" in payload["text"]
+    assert "دسترسی‌های لغوشده: ۱" in payload["text"]
+    assert "مشاوران مالی" not in payload["text"]
+    callbacks = [
+        button["callback_data"]
+        for row in payload["reply_markup"]["inline_keyboard"]
+        for button in row
+    ]
+    assert callbacks == ["admin:approved", "admin:requests", "admin:users", "admin:add", "nav:home"]
+
+
+def test_admin_can_approve_request_and_user_is_notified(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+    saved: list[dict[str, object]] = []
+    audits: list[tuple[int, str, int]] = []
+    admin = {
+        "id": 1,
+        "status": "approved",
+        "role": "admin",
+        "root_admin": True,
+        "ui_version": telegram_bot.UI_VERSION,
+    }
+    target = {
+        "id": 22,
+        "status": "pending",
+        "role": "user",
+        "username": "new_user",
+        "answer_message_id": 44,
+    }
+    monkeypatch.setattr(telegram_bot, "ensure_user", lambda sender: admin)
+    monkeypatch.setattr(telegram_bot, "get_user", lambda user_id: target)
+    monkeypatch.setattr(telegram_bot, "save_user", lambda value: saved.append(dict(value)))
+    monkeypatch.setattr(telegram_bot, "audit", lambda actor, action, target_id: audits.append((actor, action, target_id)))
+    monkeypatch.setattr(
+        telegram_bot,
+        "_api",
+        lambda method, payload: calls.append((method, payload))
+        or ({"ok": True, "result": {"message_id": 70}} if method == "sendMessage" else {"ok": True}),
+    )
+
+    telegram_bot._handle_callback(
+        {
+            "id": "approve-1",
+            "from": {"id": 1},
+            "message": {"message_id": 55, "chat": {"id": 1, "type": "private"}},
+            "data": "request:approve:22",
+        }
+    )
+
+    assert target["status"] == "approved"
+    assert audits == [(1, "approve", 22)]
+    assert any(method == "editMessageText" and payload["message_id"] == 55 for method, payload in calls)
+    assert any(
+        method == "sendMessage"
+        and payload["chat_id"] == 22
+        and "درخواست دسترسی شما تأیید شد" in payload["text"]
+        and "keyboard" in payload["reply_markup"]
+        for method, payload in calls
+    )
+    assert any(method == "deleteMessage" and payload["message_id"] == 44 for method, payload in calls)
+
+
 def test_report_text_contains_only_requested_fields(monkeypatch) -> None:
     monkeypatch.setattr(
         telegram_bot,
