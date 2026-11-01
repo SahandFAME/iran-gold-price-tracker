@@ -14,6 +14,7 @@ STATUS_LABELS = {"pending": "در انتظار تأیید", "approved": "فعا�
 ROLE_LABELS = {"user": "کاربر", "admin": "مدیر"}
 FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
 UI_VERSION = 5
+USERS_PAGE_SIZE = 3
 MAIN_MENU_MESSAGE = "<b>منوی اصلی</b>\nگزینه موردنظر را انتخاب کنید:"
 
 
@@ -220,13 +221,23 @@ def _display_name(user: dict[str, object]) -> str:
     return f"@{username}" if username else (name or str(user["id"]))
 
 
+def _list_display_name(user: dict[str, object]) -> str:
+    username = str(user.get("username") or "")
+    name = " ".join(filter(None, (str(user.get("first_name") or ""), str(user.get("last_name") or ""))))
+    if name and username:
+        return f"{name} (@{username})"
+    if username:
+        return f"@{username}"
+    return name or str(user["id"])
+
+
 def _users_menu(
     actor: dict[str, object],
     chat_id: int,
     *,
     message_id: int | None = None,
-    selected_id: int | None = None,
     status_filter: str | None = None,
+    page: int = 1,
 ) -> None:
     all_users = list_users()
     users = [item for item in all_users if item.get("status") == status_filter] if status_filter else all_users
@@ -238,6 +249,10 @@ def _users_menu(
         "approved": "admin:approved",
         "pending": "admin:requests",
     }.get(status_filter, "admin:users")
+    view = {
+        "approved": "approved",
+        "pending": "requests",
+    }.get(status_filter, "users")
     if not users:
         _answer_message(
             actor,
@@ -253,43 +268,100 @@ def _users_menu(
         )
         return
 
-    index = next((i for i, item in enumerate(users) if int(item["id"]) == selected_id), 0)
-    target = users[index]
-    status = str(target.get("status", "pending"))
-    role = str(target.get("role", "user"))
-    text = (
-        f"<b>{title}</b>\n"
-        f"کاربر {_fa_number(index + 1)} از {_fa_number(len(users))}\n\n"
-        f"<b>{html.escape(_display_name(target))}</b>\n"
-        f"شناسه: <code>{target['id']}</code>\n"
-        f"وضعیت: {STATUS_LABELS.get(status, status)}\n"
-        f"نقش: {ROLE_LABELS.get(role, role)}"
-    )
+    page_count = max(1, (len(users) + USERS_PAGE_SIZE - 1) // USERS_PAGE_SIZE)
+    page = min(max(page, 1), page_count)
+    start = (page - 1) * USERS_PAGE_SIZE
+    page_users = users[start : start + USERS_PAGE_SIZE]
+    lines = [f"<b>{title}</b>", f"صفحه {_fa_number(page)} از {_fa_number(page_count)}", ""]
+    numbered_users: list[tuple[int, dict[str, object]]] = []
+    for offset, target in enumerate(page_users, start=1):
+        number = start + offset
+        numbered_users.append((number, target))
+        status = str(target.get("status", "pending"))
+        role = str(target.get("role", "user"))
+        details = ROLE_LABELS.get(role, role)
+        if status_filter is None:
+            details = f"{STATUS_LABELS.get(status, status)} • {details}"
+        lines.append(
+            f"{_fa_number(number)}. {html.escape(_list_display_name(target))} • "
+            f"<code>{target['id']}</code> • {details}"
+        )
+        lines.append("")
+    text = "\n".join(lines).rstrip()
 
     rows: list[list[dict[str, str]]] = []
-    actions: list[dict[str, str]] = []
-    if status == "pending":
-        actions.append({"text": "✅ تأیید", "callback_data": f"user:approve:{target['id']}"})
-        actions.append({"text": "❌ رد", "callback_data": f"user:deny:{target['id']}"})
-    elif status == "removed":
-        actions.append({"text": "✅ فعال‌سازی مجدد", "callback_data": f"user:approve:{target['id']}"})
-    elif role == "user":
-        actions.append({"text": "⬆️ ارتقا به مدیر", "callback_data": f"user:promote:{target['id']}"})
-    elif not target.get("root_admin"):
-        actions.append({"text": "⬇️ تنزل به کاربر", "callback_data": f"user:demote:{target['id']}"})
-    if not target.get("root_admin") and status != "removed":
-        actions.append({"text": "🗑 حذف دسترسی", "callback_data": f"user:remove:{target['id']}"})
-    if actions:
-        rows.append(actions)
+    for number, target in numbered_users:
+        status = str(target.get("status", "pending"))
+        role = str(target.get("role", "user"))
+        suffix = f":{view}:{page}"
+        if status_filter == "approved":
+            if not target.get("root_admin"):
+                rows.append(
+                    [
+                        {
+                            "text": f"🚫 لغو دسترسی {_fa_number(number)}",
+                            "callback_data": f"user:remove:{target['id']}{suffix}",
+                        }
+                    ]
+                )
+            continue
+        if status == "pending":
+            rows.append(
+                [
+                    {
+                        "text": f"✅ تأیید {_fa_number(number)}",
+                        "callback_data": f"user:approve:{target['id']}{suffix}",
+                    },
+                    {
+                        "text": f"❌ رد {_fa_number(number)}",
+                        "callback_data": f"user:deny:{target['id']}{suffix}",
+                    },
+                ]
+            )
+        elif status == "removed":
+            rows.append(
+                [
+                    {
+                        "text": f"✅ فعال‌سازی {_fa_number(number)}",
+                        "callback_data": f"user:approve:{target['id']}{suffix}",
+                    }
+                ]
+            )
+        elif role == "user":
+            rows.append(
+                [
+                    {
+                        "text": f"⬆️ ارتقا {_fa_number(number)}",
+                        "callback_data": f"user:promote:{target['id']}{suffix}",
+                    },
+                    {
+                        "text": f"🚫 لغو {_fa_number(number)}",
+                        "callback_data": f"user:remove:{target['id']}{suffix}",
+                    },
+                ]
+            )
+        elif not target.get("root_admin"):
+            rows.append(
+                [
+                    {
+                        "text": f"⬇️ تنزل {_fa_number(number)}",
+                        "callback_data": f"user:demote:{target['id']}{suffix}",
+                    },
+                    {
+                        "text": f"🚫 لغو {_fa_number(number)}",
+                        "callback_data": f"user:remove:{target['id']}{suffix}",
+                    },
+                ]
+            )
 
-    if len(users) > 1:
-        previous_user = users[(index - 1) % len(users)]
-        next_user = users[(index + 1) % len(users)]
+    if page_count > 1:
+        navigation: list[dict[str, str]] = []
+        if page > 1:
+            navigation.append({"text": "◀️ قبلی", "callback_data": f"{callback_prefix}:page:{page - 1}"})
+        if page < page_count:
+            navigation.append({"text": "بعدی ▶️", "callback_data": f"{callback_prefix}:page:{page + 1}"})
         rows.append(
-            [
-                {"text": "◀️ قبلی", "callback_data": f"{callback_prefix}:{previous_user['id']}"},
-                {"text": "بعدی ▶️", "callback_data": f"{callback_prefix}:{next_user['id']}"},
-            ]
+            navigation
         )
     rows.extend(
         [
@@ -556,17 +628,15 @@ def _handle_callback(callback: dict[str, object]) -> None:
     }
     menu_prefix = next((prefix for prefix in menu_filters if data == prefix or data.startswith(prefix + ":")), None)
     if menu_prefix:
-        selected_id: int | None = None
         parts = data.split(":")
-        if len(parts) == 3 and parts[2].isdigit():
-            selected_id = int(parts[2])
+        page = int(parts[3]) if len(parts) == 4 and parts[2] == "page" and parts[3].isdigit() else 1
         _answer(callback_id)
         _users_menu(
             user,
             chat_id,
             message_id=message_id,
-            selected_id=selected_id,
             status_filter=menu_filters[menu_prefix],
+            page=page,
         )
         return
     if data == "admin:add":
@@ -583,10 +653,16 @@ def _handle_callback(callback: dict[str, object]) -> None:
         return
 
     parts = data.split(":")
-    if len(parts) != 3 or parts[0] != "user" or not parts[2].isdigit():
+    if len(parts) not in {3, 5} or parts[0] != "user" or not parts[2].isdigit():
         _answer(callback_id, "درخواست نامعتبر است.")
         return
     action, target_id = parts[1], int(parts[2])
+    view = parts[3] if len(parts) == 5 else "users"
+    page = int(parts[4]) if len(parts) == 5 and parts[4].isdigit() else 1
+    view_filters = {"approved": "approved", "requests": "pending", "users": None}
+    if view not in view_filters:
+        _answer(callback_id, "درخواست نامعتبر است.")
+        return
     target = get_user(target_id)
     if target is None:
         _answer(callback_id, "کاربر پیدا نشد.")
@@ -616,7 +692,13 @@ def _handle_callback(callback: dict[str, object]) -> None:
     _answer(callback_id, "انجام شد.")
     if action in {"approve", "deny"}:
         _notify_user_of_decision(target, action == "approve")
-    _users_menu(user, chat_id, message_id=message_id, selected_id=target_id)
+    _users_menu(
+        user,
+        chat_id,
+        message_id=message_id,
+        status_filter=view_filters[view],
+        page=page,
+    )
 
 
 def handle_update(update: dict[str, object]) -> None:

@@ -161,10 +161,80 @@ def test_user_list_replaces_previous_answer(monkeypatch) -> None:
     assert deleted_ids == [99]
     sent = [payload for method, payload in calls if method == "sendMessage"]
     assert len(sent) == 1
-    assert "کاربر ۱ از ۲" in sent[0]["text"]
+    assert "صفحه ۱ از ۱" in sent[0]["text"]
+    assert "@new_user" in sent[0]["text"]
     callbacks = sent[0]["reply_markup"]["inline_keyboard"]
-    assert any(button["callback_data"] == "admin:users:2" for row in callbacks for button in row)
+    assert any(button["callback_data"] == "user:approve:2:users:1" for row in callbacks for button in row)
     assert admin["answer_message_id"] == 100
+
+
+def test_approved_users_use_numbered_paginated_list_architecture(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+    admin = {"id": 1, "status": "approved", "role": "admin", "root_admin": True}
+    users = [
+        {**admin, "first_name": "Owner", "username": "owner"},
+        {"id": 2, "status": "approved", "role": "user", "first_name": "Ali", "username": "ali"},
+        {"id": 3, "status": "approved", "role": "admin", "first_name": "Sara", "username": "sara"},
+        {"id": 4, "status": "approved", "role": "user", "first_name": "Reza", "username": "reza"},
+    ]
+    monkeypatch.setattr(telegram_bot, "list_users", lambda: users)
+    monkeypatch.setattr(telegram_bot, "save_user", lambda value: None)
+    monkeypatch.setattr(
+        telegram_bot,
+        "_api",
+        lambda method, payload: calls.append((method, payload))
+        or ({"ok": True, "result": {"message_id": 120}} if method == "sendMessage" else {"ok": True}),
+    )
+
+    telegram_bot._users_menu(admin, 1, status_filter="approved", page=1)
+
+    payload = next(payload for method, payload in calls if method == "sendMessage")
+    assert "<b>کاربران مجاز</b>" in payload["text"]
+    assert "صفحه ۱ از ۲" in payload["text"]
+    assert "۱. Owner (@owner)" in payload["text"]
+    assert "۲. Ali (@ali)" in payload["text"]
+    assert "۳. Sara (@sara)" in payload["text"]
+    assert "Reza" not in payload["text"]
+    callbacks = [
+        button["callback_data"]
+        for row in payload["reply_markup"]["inline_keyboard"]
+        for button in row
+    ]
+    assert "user:remove:1:approved:1" not in callbacks
+    assert "user:remove:2:approved:1" in callbacks
+    assert "user:remove:3:approved:1" in callbacks
+    assert "admin:approved:page:2" in callbacks
+    assert callbacks[-2:] == ["nav:admin", "nav:home"]
+
+
+def test_pending_requests_use_same_numbered_action_model(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+    admin = {"id": 1, "status": "approved", "role": "admin", "root_admin": True}
+    users = [
+        {"id": 10, "status": "pending", "role": "user", "first_name": "One"},
+        {"id": 11, "status": "pending", "role": "user", "first_name": "Two"},
+    ]
+    monkeypatch.setattr(telegram_bot, "list_users", lambda: users)
+    monkeypatch.setattr(telegram_bot, "save_user", lambda value: None)
+    monkeypatch.setattr(
+        telegram_bot,
+        "_api",
+        lambda method, payload: calls.append((method, payload))
+        or ({"ok": True, "result": {"message_id": 121}} if method == "sendMessage" else {"ok": True}),
+    )
+
+    telegram_bot._users_menu(admin, 1, status_filter="pending")
+
+    payload = next(payload for method, payload in calls if method == "sendMessage")
+    callbacks = [
+        button["callback_data"]
+        for row in payload["reply_markup"]["inline_keyboard"]
+        for button in row
+    ]
+    assert "user:approve:10:requests:1" in callbacks
+    assert "user:deny:10:requests:1" in callbacks
+    assert "user:approve:11:requests:1" in callbacks
+    assert "user:deny:11:requests:1" in callbacks
 
 
 def test_new_answer_deletes_only_previous_answer(monkeypatch) -> None:
