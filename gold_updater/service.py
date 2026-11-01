@@ -9,7 +9,7 @@ import urllib.request
 from zoneinfo import ZoneInfo
 
 from .microsoft import get_access_token
-from .tgju import fetch_tgju_highs
+from .tgju import TGJUTemporarilyUnavailable, fetch_tgju_highs
 from .workbook import latest_workbook_date, update_workbook
 
 
@@ -60,10 +60,20 @@ def run_daily_update(today: dt.date | None = None) -> dict[str, object]:
 
     metadata = json.loads(_graph_request(item_path + "?$select=eTag,name,size,lastModifiedDateTime", token))
     workbook = _download_workbook(item_path + "/content", token)
-    observations = fetch_tgju_highs(latest_workbook_date(workbook) - dt.timedelta(days=14))
+    price_source_status = "available"
+    try:
+        observations = fetch_tgju_highs(latest_workbook_date(workbook) - dt.timedelta(days=14))
+    except TGJUTemporarilyUnavailable as error:
+        # A source outage must not create a gap in the daily series. The
+        # workbook updater carries the last price forward, and its rolling
+        # reconciliation corrects recent fallback rows on a later run.
+        observations = {}
+        price_source_status = "temporarily_unavailable"
+        print(f"TGJU temporarily unavailable; carrying price forward: {error}", flush=True)
     updated, audit = update_workbook(workbook, today, observations, reconcile_days=14)
     audit["source_etag"] = metadata["eTag"]
     audit["file_name"] = metadata["name"]
+    audit["price_source_status"] = price_source_status
 
     if not audit["updated"]:
         return audit
