@@ -1,3 +1,4 @@
 cryptography==50.0.2
 httpx==0.28.1
 vercel-blob==0.5.0
+vercel-connect==0.2.2
