@@ -175,7 +175,16 @@ def test_approved_users_use_numbered_paginated_list_architecture(monkeypatch) ->
         {**admin, "first_name": "Owner", "username": "owner"},
         {"id": 2, "status": "approved", "role": "user", "first_name": "Ali", "username": "ali"},
         {"id": 3, "status": "approved", "role": "admin", "first_name": "Sara", "username": "sara"},
-        {"id": 4, "status": "approved", "role": "user", "first_name": "Reza", "username": "reza"},
+        *[
+            {
+                "id": user_id,
+                "status": "approved",
+                "role": "user",
+                "first_name": f"User{user_id}",
+                "username": f"user{user_id}",
+            }
+            for user_id in range(4, 12)
+        ],
     ]
     monkeypatch.setattr(telegram_bot, "list_users", lambda: users)
     monkeypatch.setattr(telegram_bot, "save_user", lambda value: None)
@@ -194,7 +203,8 @@ def test_approved_users_use_numbered_paginated_list_architecture(monkeypatch) ->
     assert "۱. Owner (@owner)" in payload["text"]
     assert "۲. Ali (@ali)" in payload["text"]
     assert "۳. Sara (@sara)" in payload["text"]
-    assert "Reza" not in payload["text"]
+    assert "User10 (@user10)" in payload["text"]
+    assert "User11" not in payload["text"]
     callbacks = [
         button["callback_data"]
         for row in payload["reply_markup"]["inline_keyboard"]
@@ -250,6 +260,27 @@ def test_new_answer_deletes_only_previous_answer(monkeypatch) -> None:
 
     monkeypatch.setattr(telegram_bot, "_api", fake_api)
     telegram_bot._answer_message(user, 123, "new answer", telegram_bot._main_keyboard("user"))
+
+    assert [method for method, _ in calls] == ["deleteMessage", "sendMessage"]
+    assert user["answer_message_id"] == 13
+
+
+def test_manually_deleted_previous_answer_cannot_stop_next_response(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+    user = {"id": 123, "status": "approved", "role": "user", "answer_message_id": 12}
+    monkeypatch.setattr(telegram_bot, "save_user", lambda value: None)
+
+    def fake_api(method, payload):
+        calls.append((method, payload))
+        if method == "deleteMessage":
+            raise OSError("message was already deleted")
+        if method == "sendMessage":
+            return {"ok": True, "result": {"message_id": 13}}
+        return {"ok": True}
+
+    monkeypatch.setattr(telegram_bot, "_api", fake_api)
+
+    telegram_bot._answer_message(user, 123, "next answer", telegram_bot._main_keyboard("user"))
 
     assert [method for method, _ in calls] == ["deleteMessage", "sendMessage"]
     assert user["answer_message_id"] == 13

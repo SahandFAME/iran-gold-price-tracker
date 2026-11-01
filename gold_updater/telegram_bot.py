@@ -14,7 +14,7 @@ STATUS_LABELS = {"pending": "در انتظار تأیید", "approved": "فعا�
 ROLE_LABELS = {"user": "کاربر", "admin": "مدیر"}
 FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
 UI_VERSION = 5
-USERS_PAGE_SIZE = 3
+USERS_PAGE_SIZE = 10
 MAIN_MENU_MESSAGE = "<b>منوی اصلی</b>\nگزینه موردنظر را انتخاب کنید:"
 
 
@@ -51,7 +51,8 @@ def _delete(chat_id: int, message_id: int | None) -> None:
         return
     try:
         _api("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
-    except RuntimeError:
+    except Exception as error:
+        print(f"Telegram message cleanup skipped: {type(error).__name__}: {error}", flush=True)
         pass
 
 
@@ -59,7 +60,11 @@ def _answer(callback_id: str, text: str | None = None) -> None:
     payload: dict[str, object] = {"callback_query_id": callback_id}
     if text:
         payload["text"] = text
-    _api("answerCallbackQuery", payload)
+    try:
+        _api("answerCallbackQuery", payload)
+    except Exception as error:
+        # An expired callback must not prevent the requested action.
+        print(f"Telegram callback acknowledgement skipped: {type(error).__name__}: {error}", flush=True)
 
 
 def _edit_request_notification(
@@ -137,10 +142,11 @@ def _migrate_ui(user: dict[str, object], chat_id: int) -> None:
 
 def _clear_answer(user: dict[str, object], chat_id: int) -> None:
     answer_id = int(user.get("answer_message_id") or 0) or None
-    _delete(chat_id, answer_id)
     if answer_id:
         user.pop("answer_message_id", None)
         save_user(user)
+        # Cleanup is best-effort. The user may already have deleted the message.
+        _delete(chat_id, answer_id)
 
 
 def _answer_message(
