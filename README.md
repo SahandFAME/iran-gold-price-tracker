@@ -54,4 +54,4 @@ The non-secret `TELEGRAM_CONNECTOR` value identifies a Telegram connector attach
 
 The Persian display name, short description, full description, and branded avatar are versioned in the application. The protected setup route and the `/start` handler synchronize them through Telegram's Bot API; an encrypted Blob marker prevents duplicate profile-photo updates. Approved users receive the full Persian introduction and keyboard on `/start`, while pending users receive the access-approval introduction.
 
-After those values are configured, call the protected `/api/telegram_setup` endpoint once with the existing setup bearer secret. It registers the webhook and the Persian `/start`, `/report`, and `/admin` commands without returning either Telegram secret.
+After those values are configured, call the protected `/api/telegram_setup` endpoint once with the existing setup bearer secret. It registers the webhook and the Persian `/start` and `/report` commands without returning either Telegram secret.
