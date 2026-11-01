@@ -13,7 +13,7 @@ ADMIN_BUTTON = "⚙️ داشبورد مدیریت"
 STATUS_LABELS = {"pending": "در انتظار تأیید", "approved": "فعال", "removed": "حذف‌شده"}
 ROLE_LABELS = {"user": "کاربر", "admin": "مدیر"}
 FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
-UI_VERSION = 4
+UI_VERSION = 5
 
 
 def _api(method: str, payload: dict[str, object]) -> dict[str, object]:
@@ -76,14 +76,7 @@ def _migrate_ui(user: dict[str, object], chat_id: int) -> None:
 
     # A v2 panel may be a historical report, so never delete it during migration.
     user.pop("panel_message_id", None)
-
-    # Remove the v3 persistent reply keyboard before restoring inline menus.
-    try:
-        cleanup_id = _send(chat_id, "در حال آماده‌سازی منو…", {"remove_keyboard": True})
-        _delete(chat_id, cleanup_id)
-    except RuntimeError:
-        # A keyboard-cleanup failure must never prevent /start or menu callbacks.
-        pass
+    del chat_id
     user["ui_version"] = UI_VERSION
     save_user(user)
 
@@ -111,18 +104,10 @@ def _answer_message(
 
 
 def _main_keyboard(role: str) -> dict[str, object]:
-    rows = [[{"text": REPORT_BUTTON, "callback_data": "nav:report"}]]
+    rows = [[{"text": REPORT_BUTTON}]]
     if role == "admin":
-        rows.append([{"text": ADMIN_BUTTON, "callback_data": "nav:admin"}])
-    return {"inline_keyboard": rows}
-
-
-def _report_keyboard(role: str) -> dict[str, object]:
-    rows = [[{"text": "🔄 بروزرسانی گزارش", "callback_data": "nav:report"}]]
-    if role == "admin":
-        rows.append([{"text": ADMIN_BUTTON, "callback_data": "nav:admin"}])
-    rows.append([{"text": "🏠 منوی اصلی", "callback_data": "nav:home"}])
-    return {"inline_keyboard": rows}
+        rows.append([{"text": ADMIN_BUTTON}])
+    return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
 
 
 def _show_home(
@@ -291,7 +276,7 @@ def _show_report(
 ) -> None:
     del message_id
     _clear_answer(user, chat_id)
-    _send(chat_id, _report_text(), _report_keyboard(str(user["role"])))
+    _send(chat_id, _report_text(), _main_keyboard(str(user["role"])))
 
 
 def _approved(user: dict[str, object]) -> bool:

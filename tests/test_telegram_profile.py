@@ -46,7 +46,7 @@ def test_profile_sync_sets_text_and_first_avatar(monkeypatch) -> None:
     assert saved == [telegram_profile.PROFILE_VERSION]
 
 
-def test_start_keeps_user_message_and_restores_inline_menu(monkeypatch) -> None:
+def test_start_keeps_user_message_and_shows_persistent_bottom_menu(monkeypatch) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
     user = {
         "id": 123,
@@ -80,7 +80,8 @@ def test_start_keeps_user_message_and_restores_inline_menu(monkeypatch) -> None:
     sent = [payload for method, payload in calls if method == "sendMessage"]
     assert len(sent) == 1
     assert sent[0]["text"] == telegram_profile.START_MESSAGE
-    assert sent[0]["reply_markup"]["inline_keyboard"][0][0]["text"] == telegram_bot.REPORT_BUTTON
+    assert sent[0]["reply_markup"]["keyboard"][0][0]["text"] == telegram_bot.REPORT_BUTTON
+    assert sent[0]["reply_markup"]["is_persistent"] is True
     assert not [payload for method, payload in calls if method == "deleteMessage"]
     assert user["answer_message_id"] == 42
 
@@ -119,7 +120,7 @@ def test_report_removes_last_answer_but_preserves_previous_reports(monkeypatch) 
     sent = [payload for method, payload in calls if method == "sendMessage"]
     assert len(sent) == 1
     assert sent[0]["text"] == "<b>REPORT</b>"
-    assert sent[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "nav:report"
+    assert sent[0]["reply_markup"]["keyboard"][0][0]["text"] == telegram_bot.REPORT_BUTTON
     assert "answer_message_id" not in user
 
 
@@ -197,9 +198,7 @@ def test_v2_migration_forgets_panel_without_deleting_possible_report(monkeypatch
 
     telegram_bot._migrate_ui(user, 123)
 
-    assert [method for method, _ in calls] == ["sendMessage", "deleteMessage"]
-    assert calls[0][1]["reply_markup"] == {"remove_keyboard": True}
-    assert calls[1][1]["message_id"] != 77
+    assert calls == []
     assert "panel_message_id" not in user
     assert user["ui_version"] == telegram_bot.UI_VERSION
 
@@ -219,9 +218,17 @@ def test_v3_migration_replaces_only_tracked_prompt(monkeypatch) -> None:
 
     assert user["answer_message_id"] == 77
     assert "prompt_message_id" not in user
-    assert calls[0][0] == "sendMessage"
-    assert calls[0][1]["reply_markup"] == {"remove_keyboard": True}
-    assert calls[1] == ("deleteMessage", {"chat_id": 123, "message_id": 88})
+    assert calls == []
+
+
+def test_admin_bottom_menu_contains_report_and_dashboard() -> None:
+    keyboard = telegram_bot._main_keyboard("admin")
+
+    assert keyboard == {
+        "keyboard": [[{"text": telegram_bot.REPORT_BUTTON}], [{"text": telegram_bot.ADMIN_BUTTON}]],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }
 
 
 def test_report_text_contains_only_requested_fields(monkeypatch) -> None:
