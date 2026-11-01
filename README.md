@@ -1,6 +1,6 @@
 # Iran 18K Gold Workbook Updater
 
-Daily GitHub Actions updater for `اسناد/Geram18-tahlil-updated.xlsm` in a personal OneDrive account.
+Cloud-only Vercel Cron updater for `اسناد/Geram18-tahlil-updated.xlsm` in a personal OneDrive account.
 
 The job:
 
@@ -10,38 +10,24 @@ The job:
 - reconciles late TGJU observations from the previous 14 days;
 - extends the workbook's shared formulas, cached formula values, and all six chart ranges/caches;
 - verifies that the VBA project is byte-for-byte unchanged before uploading;
-- refuses to upload if the OneDrive source changed while the job was running.
+- writes with the Microsoft Graph eTag so it cannot overwrite a concurrent workbook edit.
 
-The workflow runs at 17:30 UTC (21:00 Tehran) every day. It can also be started manually from the repository's **Actions** tab.
+The Vercel Cron runs at 17:30 UTC (21:00 Tehran) every day. The endpoint accepts Vercel's automatically supplied `CRON_SECRET` bearer token.
 
-## One-time personal OneDrive authorization
+## Personal Microsoft authorization
 
-Install [rclone](https://rclone.org/install/) on a trusted computer, then run:
+The Microsoft application is registered for personal accounts and uses OAuth device authorization. The user signs in at Microsoft's device-login page once; no local application or client secret is required.
 
-```text
-rclone config
-```
+The refresh token and any temporary device code are encrypted before being placed in a private Vercel Blob store. The encryption key and setup secret are sensitive production environment variables. Provider access tokens are never logged or returned by an API route.
 
-Create a new remote with these choices:
+Required production configuration:
 
-1. Name: `onedrive_personal`
-2. Storage: `onedrive`
-3. Client ID and client secret: leave both blank
-4. Advanced configuration: `n`
-5. Use a web browser to authenticate: `y`
-6. Sign in with the personal Microsoft account that owns the workbook
-7. Select the personal OneDrive drive and confirm the configuration
+- `MS_CLIENT_ID`
+- `TOKEN_ENCRYPTION_KEY`
+- `SETUP_SECRET`
+- `CRON_SECRET`
+- `GRAPH_DRIVE_ID`
+- `GRAPH_ITEM_ID`
+- the project-connected private Blob credential
 
-Locate the resulting configuration file with:
-
-```text
-rclone config file
-```
-
-In the GitHub repository, open **Settings → Secrets and variables → Actions → New repository secret**. Create a secret named `RCLONE_CONFIG` and paste the complete contents of that rclone configuration file as its value.
-
-The configuration contains a sensitive OAuth refresh token. Store it only in the GitHub secret; never commit it, paste it into an issue, or send it in chat.
-
-## Activation
-
-The workflow file must be present on the repository's default branch for scheduled runs. After adding the secret and merging the updater, open **Actions → Update 18K gold workbook → Run workflow** once. Confirm the run succeeds and that OneDrive shows a new workbook version.
+The project is separate from other deployments, so its schedule, credentials, and failures cannot affect them.
