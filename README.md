@@ -31,3 +31,24 @@ Required production configuration:
 - the project-connected private Blob credential
 
 The project is separate from other deployments, so its schedule, credentials, and failures cannot affect them.
+
+## Persian Telegram bot
+
+The same isolated project also exposes a Persian Telegram bot. Telegram sends signed webhook updates to `/api/telegram`; the endpoint rejects requests that do not contain the configured Telegram secret header.
+
+Access is approval-only:
+
+- the numeric `TELEGRAM_ADMIN_ID` is the protected root administrator;
+- new users are recorded as pending after they send `/start` and cannot open reports;
+- administrators can approve, promote, demote, or remove users, and can add a member by known username or numeric Telegram ID;
+- user records and admin audit events are encrypted before being written to the existing private Blob store.
+
+The report reads two independent sources: TGJU's newest published 18K daily high and the latest cached calculation row in the macro-enabled workbook. It labels the calculation date explicitly and explains every displayed model value in Persian.
+
+Additional sensitive production configuration:
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_WEBHOOK_SECRET`
+- `TELEGRAM_ADMIN_ID`
+
+After those values are configured, call the protected `/api/telegram_setup` endpoint once with the existing setup bearer secret. It registers the webhook and the Persian `/start`, `/report`, and `/admin` commands without returning either Telegram secret.

@@ -312,3 +312,20 @@ def latest_workbook_date(workbook: bytes) -> dt.date:
     with zipfile.ZipFile(io.BytesIO(workbook), "r") as package:
         sheet = package.read(MAIN_SHEET).decode("utf-8")
     return _read_state(sheet).last_date
+
+
+def latest_workbook_snapshot(workbook: bytes) -> dict[str, object]:
+    """Return the latest input and cached calculation values for reporting."""
+
+    with zipfile.ZipFile(io.BytesIO(workbook), "r") as package:
+        sheet = package.read(MAIN_SHEET).decode("utf-8")
+    state = _read_state(sheet)
+    values = {
+        column: state.source[(column, state.last_row)]
+        for column in ("D", "E", "F", "G", "H", "I", "K", "L")
+    }
+    return {
+        "date": state.last_date.isoformat(),
+        "row": state.last_row,
+        "values": values,
+    }

@@ -14,8 +14,11 @@ class TGJUTemporarilyUnavailable(RuntimeError):
     """Raised after retryable TGJU failures have exhausted their retries."""
 
 
-def _fetch_page(client: httpx.Client, query: str) -> dict[str, object]:
-    delays = (0, 2, 5, 10)
+def _fetch_page(
+    client: httpx.Client,
+    query: str,
+    delays: tuple[int, ...] = (0, 2, 5, 10),
+) -> dict[str, object]:
     last_error = "unknown error"
     for attempt, delay in enumerate(delays, start=1):
         if delay:
@@ -89,3 +92,38 @@ def fetch_tgju_highs(cutoff: dt.date) -> dict[dt.date, int]:
                 break
 
     return observations
+
+
+def fetch_latest_tgju_high() -> tuple[dt.date, int]:
+    """Return TGJU's newest published 18K daily high with a short bot timeout."""
+
+    query = urllib.parse.urlencode(
+        {
+            "lang": "fa",
+            "draw": 1,
+            "start": 0,
+            "length": 10,
+            "search": "",
+            "order_col": "timestamp",
+            "order_dir": "desc",
+            "convert_to_ad": 1,
+        }
+    )
+    with httpx.Client(
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://www.tgju.org/profile/geram18/history",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
+        },
+        timeout=httpx.Timeout(12),
+        follow_redirects=True,
+    ) as client:
+        payload = _fetch_page(client, query, delays=(0, 1))
+
+    rows = payload.get("data", [])
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("TGJU response has no price rows")
+    newest = max(rows, key=lambda row: dt.datetime.strptime(row[6], "%Y/%m/%d"))
+    day = dt.datetime.strptime(newest[6], "%Y/%m/%d").date()
+    return day, int(newest[2].replace(",", "")) // 10

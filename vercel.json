@@ -3,6 +3,9 @@
   "functions": {
     "api/daily_update.py": {
       "maxDuration": 300
+    },
+    "api/telegram.py": {
+      "maxDuration": 60
     }
   },
   "crons": [
