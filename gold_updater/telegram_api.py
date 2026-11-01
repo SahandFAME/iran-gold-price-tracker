@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import functools
 import os
 
@@ -11,9 +12,11 @@ from vercel import connect
 def telegram_token() -> str:
     """Request the bot credential from Vercel Connect using project OIDC."""
 
-    return connect.get_token(
-        os.environ["TELEGRAM_CONNECTOR"],
-        subject=connect.ConnectAppTokenSubject(),
+    return asyncio.run(
+        connect.get_token(
+            os.environ["TELEGRAM_CONNECTOR"],
+            subject=connect.ConnectAppTokenSubject(),
+        )
     )
 
 
