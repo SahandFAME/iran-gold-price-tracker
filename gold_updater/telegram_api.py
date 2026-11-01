@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 import os
 
 import httpx
 from vercel import connect
+
+
+# Telegram places the bot credential in the request path. The default HTTPX
+# INFO log would therefore disclose it in function logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 @functools.lru_cache(maxsize=1)
@@ -26,8 +32,11 @@ def telegram_api(method: str, payload: dict[str, object] | None = None) -> dict[
         json=payload or {},
         timeout=30,
     )
-    response.raise_for_status()
-    result = response.json()
-    if not result.get("ok"):
-        raise RuntimeError(f"Telegram {method} failed")
+    try:
+        result = response.json()
+    except ValueError:
+        result = {}
+    if not response.is_success or not result.get("ok"):
+        description = str(result.get("description") or "provider error")
+        raise RuntimeError(f"Telegram {method} failed ({response.status_code}): {description}")
     return result

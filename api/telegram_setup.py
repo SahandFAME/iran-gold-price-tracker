@@ -15,46 +15,37 @@ class handler(BaseHTTPRequestHandler):
         secret = os.environ["TELEGRAM_WEBHOOK_SECRET"]
         host = os.environ.get("VERCEL_PROJECT_PRODUCTION_URL", "iran-gold-price-tracker.vercel.app")
         webhook_url = f"https://{host}/api/telegram"
-        identity = telegram_api("getMe")
-        webhook = telegram_api(
-            "setWebhook",
-            {
-                "url": webhook_url,
-                "secret_token": secret,
-                "allowed_updates": ["message", "callback_query"],
-                "drop_pending_updates": False,
-            },
-        )
-        user_commands = [
-            {"command": "start", "description": "شروع و نمایش منوی اصلی"},
-            {"command": "report", "description": "نمایش گزارش تحلیلی طلا"},
-        ]
-        commands = telegram_api(
-            "setMyCommands",
-            {"commands": user_commands, "language_code": "fa"},
-        )
-        admin_commands = telegram_api(
-            "setMyCommands",
-            {
-                "commands": user_commands
-                + [{"command": "admin", "description": "داشبورد مدیریت"}],
-                "scope": {"type": "chat", "chat_id": int(os.environ["TELEGRAM_ADMIN_ID"])},
-                "language_code": "fa",
-            },
-        )
-        ok = bool(
-            identity.get("ok")
-            and webhook.get("ok")
-            and commands.get("ok")
-            and admin_commands.get("ok")
-        )
-        send_json(
-            self,
-            200 if ok else 502,
-            {
-                "ok": ok,
-                "bot_username": (identity.get("result") or {}).get("username"),
-                "webhook": bool(webhook.get("ok")),
-                "commands": bool(commands.get("ok")),
-            },
-        )
+        try:
+            identity = telegram_api("getMe")
+            webhook = telegram_api(
+                "setWebhook",
+                {
+                    "url": webhook_url,
+                    "secret_token": secret,
+                    "allowed_updates": ["message", "callback_query"],
+                    "drop_pending_updates": False,
+                },
+            )
+            commands = telegram_api(
+                "setMyCommands",
+                {
+                    "commands": [
+                        {"command": "start", "description": "شروع و نمایش منوی اصلی"},
+                        {"command": "report", "description": "نمایش گزارش تحلیلی طلا"},
+                    ],
+                    "language_code": "fa",
+                },
+            )
+            send_json(
+                self,
+                200,
+                {
+                    "ok": True,
+                    "bot_username": (identity.get("result") or {}).get("username"),
+                    "webhook": bool(webhook.get("ok")),
+                    "commands": bool(commands.get("ok")),
+                },
+            )
+        except Exception as error:
+            print(f"Telegram setup failed: {type(error).__name__}: {error}", flush=True)
+            send_json(self, 502, {"ok": False, "error": type(error).__name__})
