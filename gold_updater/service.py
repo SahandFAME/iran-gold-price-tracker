@@ -19,8 +19,12 @@ GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
 def _graph_request(path: str, token: str, *, method: str = "GET", data: bytes | None = None, headers=None) -> bytes:
     request_headers = {"Authorization": f"Bearer {token}", **(headers or {})}
     request = urllib.request.Request(GRAPH_ROOT + path, data=data, method=method, headers=request_headers)
-    with urllib.request.urlopen(request, timeout=180) as response:
-        return response.read()
+    try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            return response.read()
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")[:1000]
+        raise RuntimeError(f"Graph {method} {path} failed with {error.code}: {detail}") from error
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -37,7 +41,8 @@ def _download_workbook(path: str, token: str) -> bytes:
         opener.open(request, timeout=60)
     except urllib.error.HTTPError as error:
         if error.code not in (301, 302, 303, 307, 308):
-            raise
+            detail = error.read().decode("utf-8", errors="replace")[:1000]
+            raise RuntimeError(f"Graph download failed with {error.code}: {detail}") from error
         location = error.headers["Location"]
     else:
         raise RuntimeError("Graph content endpoint did not return a download redirect")

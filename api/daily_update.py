@@ -14,5 +14,5 @@ class handler(BaseHTTPRequestHandler):
         try:
             send_json(self, 200, {"ok": True, **run_daily_update()})
         except Exception as error:
-            print(f"daily update failed: {type(error).__name__}: {error}")
+            print(f"daily update failed: {type(error).__name__}: {error}", flush=True)
             send_json(self, 500, {"ok": False, "error": type(error).__name__})
