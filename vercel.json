@@ -12,10 +12,6 @@
     {
       "path": "/api/daily_update",
       "schedule": "30 17 * * *"
-    },
-    {
-      "path": "/api/telegram_profile_once",
-      "schedule": "39 10 * * *"
     }
   ]
 }
