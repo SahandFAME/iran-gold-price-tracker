@@ -43,7 +43,7 @@ Access is approval-only:
 - administrators can approve, promote, demote, or remove users, and can add a member by known username or numeric Telegram ID;
 - user records and admin audit events are encrypted before being written to the existing private Blob store.
 
-The main menu uses Telegram's persistent reply keyboard, with Report available to every approved user and the Admin Dashboard added for administrators. The bot tracks only transient prompts: each new menu or admin prompt deletes the preceding prompt before it is sent. Reports are intentionally not tracked or deleted, so users retain their report history. User-management remains paginated one account at a time, and typed commands are removed after processing when Telegram permits it.
+The main menu uses Telegram inline buttons, with Report available to every approved user and the Admin Dashboard added for administrators. User messages are never deleted. The bot tracks only its latest transient answer: each new menu or admin answer deletes the preceding answer before it is sent. Reports are intentionally not tracked or deleted, so users retain their report history. User-management remains paginated one account at a time.
 
 The report reads two independent sources: TGJU's live 18K quote and the latest cached calculation row in the macro-enabled workbook. It displays only the requested analytical values with their Persian labels and explanations; historical reports remain in the Telegram chat.
 

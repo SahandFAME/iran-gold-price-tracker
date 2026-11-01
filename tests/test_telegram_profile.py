@@ -46,9 +46,14 @@ def test_profile_sync_sets_text_and_first_avatar(monkeypatch) -> None:
     assert saved == [telegram_profile.PROFILE_VERSION]
 
 
-def test_start_restores_persistent_reply_menu(monkeypatch) -> None:
+def test_start_keeps_user_message_and_restores_inline_menu(monkeypatch) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
-    user = {"id": 123, "status": "approved", "role": "user"}
+    user = {
+        "id": 123,
+        "status": "approved",
+        "role": "user",
+        "ui_version": telegram_bot.UI_VERSION,
+    }
     monkeypatch.setattr(
         telegram_bot,
         "ensure_user",
@@ -75,17 +80,18 @@ def test_start_restores_persistent_reply_menu(monkeypatch) -> None:
     sent = [payload for method, payload in calls if method == "sendMessage"]
     assert len(sent) == 1
     assert sent[0]["text"] == telegram_profile.START_MESSAGE
-    assert sent[0]["reply_markup"]["keyboard"][0][0]["text"] == telegram_bot.REPORT_BUTTON
-    assert user["prompt_message_id"] == 42
+    assert sent[0]["reply_markup"]["inline_keyboard"][0][0]["text"] == telegram_bot.REPORT_BUTTON
+    assert not [payload for method, payload in calls if method == "deleteMessage"]
+    assert user["answer_message_id"] == 42
 
 
-def test_report_removes_prompt_but_preserves_previous_reports(monkeypatch) -> None:
+def test_report_removes_last_answer_but_preserves_previous_reports(monkeypatch) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
     user = {
         "id": 123,
         "status": "approved",
         "role": "user",
-        "prompt_message_id": 42,
+        "answer_message_id": 42,
         "ui_version": telegram_bot.UI_VERSION,
     }
     monkeypatch.setattr(telegram_bot, "ensure_user", lambda sender: user)
@@ -113,18 +119,18 @@ def test_report_removes_prompt_but_preserves_previous_reports(monkeypatch) -> No
     sent = [payload for method, payload in calls if method == "sendMessage"]
     assert len(sent) == 1
     assert sent[0]["text"] == "<b>REPORT</b>"
-    assert "keyboard" in sent[0]["reply_markup"]
-    assert "prompt_message_id" not in user
+    assert sent[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "nav:report"
+    assert "answer_message_id" not in user
 
 
-def test_user_list_replaces_previous_prompt(monkeypatch) -> None:
+def test_user_list_replaces_previous_answer(monkeypatch) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
     admin = {
         "id": 1,
         "status": "approved",
         "role": "admin",
         "root_admin": True,
-        "prompt_message_id": 99,
+        "answer_message_id": 99,
         "ui_version": telegram_bot.UI_VERSION,
     }
     users = [
@@ -157,12 +163,12 @@ def test_user_list_replaces_previous_prompt(monkeypatch) -> None:
     assert "کاربر ۱ از ۲" in sent[0]["text"]
     callbacks = sent[0]["reply_markup"]["inline_keyboard"]
     assert any(button["callback_data"] == "admin:users:2" for row in callbacks for button in row)
-    assert admin["prompt_message_id"] == 100
+    assert admin["answer_message_id"] == 100
 
 
-def test_new_prompt_deletes_only_previous_prompt(monkeypatch) -> None:
+def test_new_answer_deletes_only_previous_answer(monkeypatch) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
-    user = {"id": 123, "status": "approved", "role": "user", "prompt_message_id": 12}
+    user = {"id": 123, "status": "approved", "role": "user", "answer_message_id": 12}
     monkeypatch.setattr(telegram_bot, "save_user", lambda value: None)
 
     def fake_api(method, payload):
@@ -172,10 +178,10 @@ def test_new_prompt_deletes_only_previous_prompt(monkeypatch) -> None:
         return {"ok": True, "result": True}
 
     monkeypatch.setattr(telegram_bot, "_api", fake_api)
-    telegram_bot._prompt(user, 123, "new prompt", telegram_bot._main_keyboard("user"))
+    telegram_bot._answer_message(user, 123, "new answer", telegram_bot._main_keyboard("user"))
 
     assert [method for method, _ in calls] == ["deleteMessage", "sendMessage"]
-    assert user["prompt_message_id"] == 13
+    assert user["answer_message_id"] == 13
 
 
 def test_v2_migration_forgets_panel_without_deleting_possible_report(monkeypatch) -> None:
@@ -185,14 +191,37 @@ def test_v2_migration_forgets_panel_without_deleting_possible_report(monkeypatch
     monkeypatch.setattr(
         telegram_bot,
         "_api",
-        lambda method, payload: calls.append((method, payload)) or {"ok": True},
+        lambda method, payload: calls.append((method, payload))
+        or ({"ok": True, "result": {"message_id": 88}} if method == "sendMessage" else {"ok": True}),
     )
 
-    telegram_bot._migrate_ui(user)
+    telegram_bot._migrate_ui(user, 123)
 
-    assert calls == []
+    assert [method for method, _ in calls] == ["sendMessage", "deleteMessage"]
+    assert calls[0][1]["reply_markup"] == {"remove_keyboard": True}
+    assert calls[1][1]["message_id"] != 77
     assert "panel_message_id" not in user
     assert user["ui_version"] == telegram_bot.UI_VERSION
+
+
+def test_v3_migration_replaces_only_tracked_prompt(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+    user = {"id": 123, "status": "approved", "role": "user", "ui_version": 3, "prompt_message_id": 77}
+    monkeypatch.setattr(telegram_bot, "save_user", lambda value: None)
+    monkeypatch.setattr(
+        telegram_bot,
+        "_api",
+        lambda method, payload: calls.append((method, payload))
+        or ({"ok": True, "result": {"message_id": 88}} if method == "sendMessage" else {"ok": True}),
+    )
+
+    telegram_bot._migrate_ui(user, 123)
+
+    assert user["answer_message_id"] == 77
+    assert "prompt_message_id" not in user
+    assert calls[0][0] == "sendMessage"
+    assert calls[0][1]["reply_markup"] == {"remove_keyboard": True}
+    assert calls[1] == ("deleteMessage", {"chat_id": 123, "message_id": 88})
 
 
 def test_report_text_contains_only_requested_fields(monkeypatch) -> None:

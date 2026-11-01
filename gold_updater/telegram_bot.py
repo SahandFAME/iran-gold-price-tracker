@@ -13,7 +13,7 @@ ADMIN_BUTTON = "⚙️ داشبورد مدیریت"
 STATUS_LABELS = {"pending": "در انتظار تأیید", "approved": "فعال", "removed": "حذف‌شده"}
 ROLE_LABELS = {"user": "کاربر", "admin": "مدیر"}
 FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
-UI_VERSION = 3
+UI_VERSION = 4
 
 
 def _api(method: str, payload: dict[str, object]) -> dict[str, object]:
@@ -60,26 +60,43 @@ def _answer(callback_id: str, text: str | None = None) -> None:
     _api("answerCallbackQuery", payload)
 
 
-def _migrate_ui(user: dict[str, object]) -> None:
+def _migrate_ui(user: dict[str, object], chat_id: int) -> None:
     if user.get("ui_version") == UI_VERSION:
         return
-    # The v2 panel may be a report. Forget its ID rather than deleting it so
-    # historical reports survive the menu-model migration.
+
+    previous_version = int(user.get("ui_version") or 0)
+    if previous_version == 3:
+        # v3 tracked only non-report prompts, so it is safe to replace this
+        # message when the next answer is sent.
+        prompt_id = int(user.pop("prompt_message_id", 0) or 0)
+        if prompt_id:
+            user["answer_message_id"] = prompt_id
+    else:
+        user.pop("prompt_message_id", None)
+
+    # A v2 panel may be a historical report, so never delete it during migration.
     user.pop("panel_message_id", None)
-    user.pop("prompt_message_id", None)
+
+    # Remove the v3 persistent reply keyboard before restoring inline menus.
+    try:
+        cleanup_id = _send(chat_id, "در حال آماده‌سازی منو…", {"remove_keyboard": True})
+        _delete(chat_id, cleanup_id)
+    except RuntimeError:
+        # A keyboard-cleanup failure must never prevent /start or menu callbacks.
+        pass
     user["ui_version"] = UI_VERSION
     save_user(user)
 
 
-def _clear_prompt(user: dict[str, object], chat_id: int) -> None:
-    prompt_id = int(user.get("prompt_message_id") or 0) or None
-    _delete(chat_id, prompt_id)
-    if prompt_id:
-        user.pop("prompt_message_id", None)
+def _clear_answer(user: dict[str, object], chat_id: int) -> None:
+    answer_id = int(user.get("answer_message_id") or 0) or None
+    _delete(chat_id, answer_id)
+    if answer_id:
+        user.pop("answer_message_id", None)
         save_user(user)
 
 
-def _prompt(
+def _answer_message(
     user: dict[str, object],
     chat_id: int,
     text: str,
@@ -87,23 +104,25 @@ def _prompt(
     *,
     message_id: int | None = None,
 ) -> None:
-    del message_id  # Callback messages are not deleted unless they are tracked prompts.
-    _clear_prompt(user, chat_id)
-    user["prompt_message_id"] = _send(chat_id, text, reply_markup)
+    del message_id  # Reports are untracked and must survive callbacks from them.
+    _clear_answer(user, chat_id)
+    user["answer_message_id"] = _send(chat_id, text, reply_markup)
     save_user(user)
 
 
-def _delete_incoming(message: dict[str, object], chat_id: int) -> None:
-    message_id = message.get("message_id")
-    if isinstance(message_id, int):
-        _delete(chat_id, message_id)
-
-
 def _main_keyboard(role: str) -> dict[str, object]:
-    rows = [[{"text": REPORT_BUTTON}]]
+    rows = [[{"text": REPORT_BUTTON, "callback_data": "nav:report"}]]
     if role == "admin":
-        rows.append([{"text": ADMIN_BUTTON}])
-    return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
+        rows.append([{"text": ADMIN_BUTTON, "callback_data": "nav:admin"}])
+    return {"inline_keyboard": rows}
+
+
+def _report_keyboard(role: str) -> dict[str, object]:
+    rows = [[{"text": "🔄 بروزرسانی گزارش", "callback_data": "nav:report"}]]
+    if role == "admin":
+        rows.append([{"text": ADMIN_BUTTON, "callback_data": "nav:admin"}])
+    rows.append([{"text": "🏠 منوی اصلی", "callback_data": "nav:home"}])
+    return {"inline_keyboard": rows}
 
 
 def _show_home(
@@ -112,7 +131,7 @@ def _show_home(
     *,
     message_id: int | None = None,
 ) -> None:
-    _prompt(user, chat_id, START_MESSAGE, _main_keyboard(str(user["role"])), message_id=message_id)
+    _answer_message(user, chat_id, START_MESSAGE, _main_keyboard(str(user["role"])), message_id=message_id)
 
 
 def _admin_menu(
@@ -123,7 +142,7 @@ def _admin_menu(
     notice: str | None = None,
 ) -> None:
     prefix = f"{notice}\n\n" if notice else ""
-    _prompt(
+    _answer_message(
         user,
         chat_id,
         f"{prefix}<b>داشبورد مدیریت</b>\nگزینه موردنظر را انتخاب کنید:",
@@ -153,7 +172,7 @@ def _users_menu(
 ) -> None:
     users = list_users()
     if not users:
-        _prompt(
+        _answer_message(
             actor,
             chat_id,
             "<b>فهرست کاربران</b>\n\nهنوز کاربری ثبت نشده است.",
@@ -208,7 +227,7 @@ def _users_menu(
             [{"text": "🏠 منوی اصلی", "callback_data": "nav:home"}],
         ]
     )
-    _prompt(actor, chat_id, text, {"inline_keyboard": rows}, message_id=message_id)
+    _answer_message(actor, chat_id, text, {"inline_keyboard": rows}, message_id=message_id)
 
 
 def _add_member_prompt(
@@ -219,7 +238,7 @@ def _add_member_prompt(
     error: str | None = None,
 ) -> None:
     prefix = f"{error}\n\n" if error else ""
-    _prompt(
+    _answer_message(
         user,
         chat_id,
         f"{prefix}<b>افزودن عضو</b>\n\nنام کاربری (با یا بدون @) یا شناسه عددی کاربر را ارسال کنید.",
@@ -271,8 +290,8 @@ def _show_report(
     message_id: int | None = None,
 ) -> None:
     del message_id
-    _clear_prompt(user, chat_id)
-    _send(chat_id, _report_text(), _main_keyboard(str(user["role"])))
+    _clear_answer(user, chat_id)
+    _send(chat_id, _report_text(), _report_keyboard(str(user["role"])))
 
 
 def _approved(user: dict[str, object]) -> bool:
@@ -289,7 +308,7 @@ def _show_pending(
     *,
     message_id: int | None = None,
 ) -> None:
-    _prompt(user, chat_id, PENDING_START_MESSAGE, message_id=message_id)
+    _answer_message(user, chat_id, PENDING_START_MESSAGE, message_id=message_id)
 
 
 def _handle_message(message: dict[str, object]) -> None:
@@ -301,8 +320,7 @@ def _handle_message(message: dict[str, object]) -> None:
     user = ensure_user(sender)
     text = str(message.get("text") or "").strip()
     is_start = text == "/start" or text.startswith("/start ")
-    _delete_incoming(message, chat_id)
-    _migrate_ui(user)
+    _migrate_ui(user, chat_id)
 
     if is_start:
         try:
@@ -354,7 +372,7 @@ def _handle_message(message: dict[str, object]) -> None:
         if _admin(user):
             _admin_menu(user, chat_id)
         else:
-            _prompt(
+            _answer_message(
                 user,
                 chat_id,
                 "شما به بخش مدیریت دسترسی ندارید.",
@@ -371,7 +389,7 @@ def _handle_callback(callback: dict[str, object]) -> None:
     if not isinstance(sender, dict) or not isinstance(chat, dict):
         return
     user = ensure_user(sender)
-    _migrate_ui(user)
+    _migrate_ui(user, int(chat["id"]))
     callback_id = str(callback["id"])
     chat_id = int(chat["id"])
     message_id = int(message.get("message_id") or 0) or None
