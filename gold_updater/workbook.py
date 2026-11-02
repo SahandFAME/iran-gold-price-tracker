@@ -134,14 +134,37 @@ def _patch_rows(
     reconciled_dates: list[str] = []
 
     reconcile_from = max(min(date_rows), state.last_date - dt.timedelta(days=reconcile_days))
-    for day, row in date_rows.items():
-        if day < reconcile_from or day > today or day not in observed:
-            continue
-        price = observed[day]
-        if int(source[("D", row)]) != price:
-            source[("D", row)] = float(price)
-            changed_rows.add(row)
-            reconciled_dates.append(day.isoformat())
+    existing_through = min(state.last_date, today)
+    observed_existing_days = sorted(
+        day
+        for day in observed
+        if reconcile_from <= day <= existing_through and day in date_rows
+    )
+
+    # Once the first published observation in the reconciliation window is
+    # reached, rebuild every following existing day as either its TGJU high or
+    # a carry-forward from the preceding day. This keeps previously appended
+    # fallback rows consistent when TGJU later corrects/publishes an earlier
+    # date. If the source is wholly unavailable (``observed`` is empty), no
+    # existing history is rewritten.
+    if observed_existing_days:
+        repair_from = observed_existing_days[0]
+        previous_price: int | None = None
+        for day, row in sorted(date_rows.items()):
+            if day < repair_from or day > existing_through:
+                continue
+            if day in observed:
+                price = observed[day]
+            elif previous_price is not None:
+                price = previous_price
+            else:
+                price = int(source[("D", row)])
+
+            if int(source[("D", row)]) != price:
+                source[("D", row)] = float(price)
+                changed_rows.add(row)
+                reconciled_dates.append(day.isoformat())
+            previous_price = price
 
     carried_dates: list[str] = []
     appended_dates: list[str] = []

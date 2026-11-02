@@ -77,3 +77,34 @@ def test_carries_forward_and_preserves_vba():
         assert '<c r="D1050" s="12"><v>999000</v></c>' in sheet
         chart = package.read("xl/charts/chart1.xml").decode()
         assert "$C$376:$C$1050" in chart
+
+
+def test_reconciliation_refreshes_existing_carry_forward_rows():
+    workbook = _minimal_workbook()
+    last_date = dt.date(1899, 12, 30) + dt.timedelta(days=45000 + 1048)
+    corrected_day = last_date - dt.timedelta(days=1)
+
+    updated, audit = update_workbook(
+        workbook,
+        last_date,
+        {corrected_day: 999_000},
+    )
+
+    assert audit["reconciled_dates"] == [
+        corrected_day.isoformat(),
+        last_date.isoformat(),
+    ]
+    with zipfile.ZipFile(io.BytesIO(updated)) as package:
+        sheet = package.read("xl/worksheets/sheet1.xml").decode()
+        assert '<c r="D1047" s="12"><v>999000</v></c>' in sheet
+        assert '<c r="D1048" s="12"><v>999000</v></c>' in sheet
+
+
+def test_source_outage_does_not_rewrite_existing_history():
+    workbook = _minimal_workbook()
+    last_date = dt.date(1899, 12, 30) + dt.timedelta(days=45000 + 1048)
+
+    updated, audit = update_workbook(workbook, last_date, {})
+
+    assert updated == workbook
+    assert audit["updated"] is False
